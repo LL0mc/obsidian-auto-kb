@@ -121,22 +121,36 @@ $summaryText = $null
 $contentSource = "metadata_only"
 
 if ($Cookie) {
-    Write-Host "  -> Trying AI summary..." -ForegroundColor DarkCyan
-    $aiData = Get-VideoAiSummary -BvId $bvid -Cid $videoInfo.cid -UpMid $videoInfo.owner.mid -Cookie $Cookie
-    if ($aiData -and $aiData.model_result -and $aiData.model_result.result_type -gt 0) {
-        $summaryText = Format-AiSummaryToText -AiData $aiData
-        $contentSource = "ai_summary"
-        $summaryLines = ($summaryText -split "`n").Count
-        Write-Host "  + AI summary OK ($summaryLines lines)" -ForegroundColor Green
+    Write-Host "  Layer 1 -> Trying AI subtitle..." -ForegroundColor DarkCyan
+    $subtitleData = Get-VideoSubtitle -Aid $videoInfo.aid -Cid $videoInfo.cid -Cookie $Cookie
+    if ($subtitleData -and $subtitleData.segments -and $subtitleData.segments.Count -gt 0) {
+        $aiSummary = Get-VideoAiSummary -BvId $bvid -Cid $videoInfo.cid -UpMid $videoInfo.owner.mid -Cookie $Cookie
+        $subtitleText = Parse-SubtitleToText -SubtitleData $subtitleData
+        $aiSummaryText = if ($aiSummary) { Format-AiSummaryToText -AiData $aiSummary } else { $null }
+        $parts = @()
+        if ($aiSummaryText) { $parts += $aiSummaryText }
+        if ($subtitleText) { $parts += $subtitleText }
+        $summaryText = $parts -join "`n`n"
+        $contentSource = if ($aiSummaryText) { "subtitle+summary" } else { "subtitle_only" }
+        Write-Host "  + Subtitle OK ($($subtitleData.segments.Count) segments)" -ForegroundColor Green
     } else {
-        Write-Host "  - AI summary not available" -ForegroundColor Yellow
+        Write-Host "  - No subtitle available, trying AI summary..." -ForegroundColor Yellow
+        $aiData = Get-VideoAiSummary -BvId $bvid -Cid $videoInfo.cid -UpMid $videoInfo.owner.mid -Cookie $Cookie
+        if ($aiData -and $aiData.model_result -and $aiData.model_result.result_type -gt 0) {
+            $summaryText = Format-AiSummaryToText -AiData $aiData
+            $contentSource = "ai_summary"
+            $summaryLines = ($summaryText -split "`n").Count
+            Write-Host "  + AI summary OK ($summaryLines lines)" -ForegroundColor Green
+        } else {
+            Write-Host "  - AI summary not available" -ForegroundColor Yellow
+        }
     }
 } else {
-    Write-Host "  - No cookie configured, skip AI summary" -ForegroundColor Yellow
+    Write-Host "  - No cookie configured, skip subtitle and AI summary" -ForegroundColor Yellow
 }
 
 if (-not $summaryText) {
-    Write-Host "  -> Trying danmaku analysis..." -ForegroundColor DarkCyan
+    Write-Host "  Layer 3 -> Trying danmaku analysis..." -ForegroundColor DarkCyan
     $danmakuNodes = Get-Danmaku -Cid $videoInfo.cid
     if ($danmakuNodes -and $danmakuNodes.Count -gt 0) {
         $summaryText = Parse-DanmakuToText -DanmakuNodes $danmakuNodes
@@ -154,20 +168,36 @@ $filename = "$safeTitle.md"
 
 $content = New-NoteContent -VideoInfo $videoInfo -SummaryText $summaryText -ContentSource $contentSource -BvId $bvid
 
-try {
-    $contentEscaped = $content -replace '"', '\"' -replace "`n", "\n" -replace "`t", "\t"
-    $proc = Start-Process -FilePath $ObsidianCli -ArgumentList "vault=`"$Vault`" create path=`"$Folder/$filename`" content=`"$contentEscaped`" silent" -NoNewWindow -Wait -PassThru
-    if ($proc.ExitCode -eq 0) {
-        Write-Host ""
-        Write-Host "  + Note created!" -ForegroundColor Green
-        Write-Host "  Vault: $Vault"
-        Write-Host "  Path: $Folder/$filename"
-        Write-Host "  Source: $contentSource"
-        return @{ success = $true; vault = $Vault; path = "$Folder/$filename" }
+function Write-NoteToVault {
+    param([string]$VaultName, [string]$FolderPath, [string]$FileName, [string]$FileContent)
+    $vaultPath = $null
+    if ($config -and $config.vaults.$VaultName) {
+        $vaultPath = $config.vaults.$VaultName
+    } else {
+        $knownVaults = @{ brew = "D:\notebooks\Lmc\brew"; escalator = "D:\notebooks\Work\escalator" }
+        $vaultPath = $knownVaults[$VaultName]
     }
-    throw "Obsidian CLI exit code: $($proc.ExitCode)"
-} catch {
-    Write-Host "  - Failed to write to Obsidian, saving to output/" -ForegroundColor Yellow
+    if ($vaultPath -and (Test-Path $vaultPath)) {
+        $targetDir = "$vaultPath\$FolderPath"
+        if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+        $targetFile = "$targetDir\$FileName"
+        Set-Content -Path $targetFile -Value $FileContent -Encoding UTF8
+        return $targetFile
+    }
+    return $null
+}
+
+$finalPath = Write-NoteToVault -VaultName $Vault -FolderPath $Folder -FileName $filename -FileContent $content
+
+if ($finalPath) {
+    Write-Host ""
+    Write-Host "  + Note created!" -ForegroundColor Green
+    Write-Host "  Vault: $Vault"
+    Write-Host "  Path: $Folder/$filename"
+    Write-Host "  Source: $contentSource"
+    return @{ success = $true; vault = $Vault; path = "$Folder/$filename" }
+} else {
+    Write-Host "  - Cannot find vault path, saving to output/" -ForegroundColor Yellow
     $outDir = "$ProjectRoot\output"
     if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
     $outPath = "$outDir\$filename"

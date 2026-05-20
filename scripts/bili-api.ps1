@@ -13,7 +13,7 @@ function Invoke-BiliHttp {
         $req.Headers.Add("Cookie", $Cookie)
     }
     $resp = $req.GetResponse()
-    $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
+    $reader = New-Object System.IO.StreamReader($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
     $body = $reader.ReadToEnd()
     $reader.Close()
     return $body
@@ -129,6 +129,66 @@ function Parse-DanmakuToText {
         } catch {
             continue
         }
+    }
+    return $lines -join "`n"
+}
+
+function Get-VideoSubtitle {
+    param(
+        [Parameter(Mandatory)] [string]$Aid,
+        [Parameter(Mandatory)] [string]$Cid,
+        [string]$Cookie = "",
+        [string]$Lang = "ai-zh"
+    )
+    $playerUrl = "https://api.bilibili.com/x/player/v2?aid=$Aid&cid=$Cid"
+    $body = Invoke-BiliHttp -Uri $playerUrl -Cookie $Cookie
+    $resp = $body | ConvertFrom-Json
+    if ($resp.code -ne 0 -or -not $resp.data.subtitle.subtitles) {
+        return $null
+    }
+    $subtitles = $resp.data.subtitle.subtitles
+    $target = $null
+    foreach ($sub in $subtitles) {
+        if ($sub.lan -eq $Lang) {
+            $target = $sub; break
+        }
+    }
+    if (-not $target) {
+        return $null
+    }
+    $subUrl = $target.subtitle_url
+    if ($subUrl -match '^//') { $subUrl = "https:$subUrl" }
+    $subBody = Invoke-BiliHttp -Uri $subUrl -Cookie $Cookie
+    $subJson = $subBody | ConvertFrom-Json
+    if (-not $subJson.body) {
+        return $null
+    }
+    return @{ segments = $subJson.body; lang = $target.lan_doc }
+}
+
+function Parse-SubtitleToText {
+    param($SubtitleData)
+    if (-not $SubtitleData -or -not $SubtitleData.segments) { return $null }
+    $lines = @()
+    $lines += "## AI Transcript ($($SubtitleData.lang))"
+    $lines += ""
+    $segments = $SubtitleData.segments
+    $groupSize = 5
+    for ($i = 0; $i -lt $segments.Count; $i += $groupSize) {
+        $end = [Math]::Min($i + $groupSize, $segments.Count)
+        $texts = @()
+        for ($j = $i; $j -lt $end; $j++) {
+            $texts += $segments[$j].content
+        }
+        $combined = ($texts | Where-Object { $_ -match '\S' }) -join ' '
+        $combined = $combined -replace '\s+', ' '
+        $combined = $combined.Trim()
+        if (-not $combined) { continue }
+        $seg = $segments[$i]
+        $ts = [int][math]::Floor([double]$seg.from)
+        $mm = if ($ts/60 -lt 10) { "0$([int]($ts/60))" } else { "$([int]($ts/60))" }
+        $ss = if ($ts%60 -lt 10) { "0$($ts%60)" } else { "$($ts%60)" }
+        $lines += "[$mm`:$ss] $combined"
     }
     return $lines -join "`n"
 }

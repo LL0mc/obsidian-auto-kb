@@ -19,14 +19,18 @@
 │                                                   │
 │  [1/4] 解析视频 ID                                │
 │  [2/4] 获取视频信息 (Get-VideoInfo)               │
-│  [3/4] 内容理解 (三层降级策略)                     │
-│    ├─ Layer 1: B站官方 AI 摘要                    │
-│    │   GET /x/web-interface/view/conclusion/get   │
-│    │   (需 WBI 签名 + Cookie)                     │
-│    ├─ Layer 2: 弹幕分析 (降级)                    │
-│    │   GET /comment.bilibili.com/{cid}.xml        │
-│    └─ Layer 3: 元信息 (仅标题/简介)               │
-│  [4/4] 格式化笔记 → Obsidian CLI 写入 vault       │
+│  [3/4] 内容理解 (四层降级策略)                     │
+│    ├─ Layer 1: AI 字幕全文转录 + 摘要 (最佳)      │
+│    │   GET /x/player/v2 → 字幕 JSON                │
+│    │   + GET /x/web-interface/view/conclusion/get  │
+│    │   (需 Cookie)                                 │
+│    ├─ Layer 2: B站官方 AI 摘要                     │
+│    │   GET /x/web-interface/view/conclusion/get    │
+│    │   (需 WBI 签名 + Cookie)                      │
+│    ├─ Layer 3: 弹幕分析 (降级)                    │
+│    │   GET /comment.bilibili.com/{cid}.xml         │
+│    └─ Layer 4: 元信息 (仅标题/简介)               │
+│  [4/4] 格式化笔记 → 直接写入 vault 目录            │
 └──────────────────────────────────────────────────┘
            │
            ▼
@@ -46,8 +50,8 @@ obsidian_manager/
 │   └── clipper.md              # Opencode Subagent 定义
 ├── scripts/
 │   ├── wbi-sign.ps1            # WBI 签名算法 (MixinKey + MD5)
-│   ├── bili-api.ps1            # B站 API 核心模块
-│   └── bili-clipper.ps1        # 剪藏主脚本
+│   ├── bili-api.ps1            # B站 API 核心模块 (视频信息/字幕/AI摘要/弹幕)
+│   └── bili-clipper.ps1        # 剪藏主脚本 (4层降级 + 直接写入 vault)
 ├── templates/
 │   └── bilibili-clip.md        # 笔记模板参考
 └── output/                     # Obsidian 离线时的降级目录
@@ -137,7 +141,7 @@ duration: 5m58s
 date: 2026-05-20
 views: 3817480
 likes: 145229
-content_source: ai_summary    # ai_summary | danmaku | metadata_only
+content_source: subtitle+summary  # subtitle+summary | subtitle_only | ai_summary | danmaku | metadata_only
 status: inbox
 tags:
   - bilibili
@@ -145,17 +149,20 @@ tags:
 ---
 ```
 
-笔记正文包含：简介、AI 全文总结、分段提纲（带时间戳）、AI 字幕、自定义笔记区、相关链接。
+笔记正文包含：简介、AI 摘要、分段提纲（带时间戳）、AI 字幕、AI 字幕文稿（按时间分组）、自定义笔记区、相关链接。
 
 ## 技术细节
 
-### 内容理解的三层降级策略
+### 内容理解的四层降级策略
 
-| Layer | 方法 | 接口 | 认证 | 成功率 |
+| Layer | 方法 | 接口 | 认证 | 说明 |
 |---|---|---|---|---|
-| 1 | B站官方 AI 摘要 | `GET /x/web-interface/view/conclusion/get` | WBI 签名 + Cookie | 高 (有语音的视频) |
-| 2 | 弹幕时间轴分析 | `GET /comment.bilibili.com/{cid}.xml` | 无 | 中 (热门视频) |
-| 3 | 仅元信息 | `GET /x/web-interface/view` | 无 | 100% |
+| 1 | **AI 字幕全文转录** + 摘要 | `GET /x/player/v2` → 字幕 JSON | Cookie | 完整文稿，~95% B站视频有 AI 字幕 |
+| 2 | B站官方 AI 摘要 | `GET /x/web-interface/view/conclusion/get` | WBI 签名 + Cookie | 仅摘要（较简略） |
+| 3 | 弹幕时间轴分析 | `GET /comment.bilibili.com/{cid}.xml` | 无 | 弹幕热度分析 |
+| 4 | 仅元信息 | `GET /x/web-interface/view` | 无 | 保底，100% |
+
+字幕数据来自 Bilibili 的 AI 语音识别（`aisubtitle.hdslb.com`），返回带时间戳的 JSON 文稿。字幕 URL 带 `auth_key` 时效认证，需实时获取实时消费。
 
 ### WBI 签名
 
@@ -174,10 +181,11 @@ Bilibili 的部分 API 需要 WBI 签名鉴权。算法在 `scripts/wbi-sign.ps1
 
 在开发过程中生成的测试笔记：
 
-| 视频 | BVID | 测试结果 |
-|---|---|---|
-| 【MV】保加利亚妖王AZIS视频合辑 | `BV17x411w7KC` | 1200 条弹幕分析 ✓ |
-| 中文怎么就退化成这样了？？？ | `BV1L94y1H7CV` | AI 摘要 19 行 ✓ |
+| 视频 | BVID | 内容源 | 结果 |
+|---|---|---|---|
+| 一个视频讲清楚：「存在主义」的问题在哪里？ | `BV16S8yzQEPv` | subtitle+summary | 118 行笔记 (完整字幕转录 + AI 摘要) ✓ |
+| 反"主体性"神话——对"主体性"哲学的批判 | `BV1wYL36LEvs` | subtitle+summary | 成功转录 ✓ |
+| 中文怎么就退化成这样了？？？ | `BV1L94y1H7CV` | ai_summary | 摘要 19 行 ✓ |
 
 测试笔记位于 `brew/Bilibili/` 目录。
 
@@ -186,9 +194,10 @@ Bilibili 的部分 API 需要 WBI 签名鉴权。算法在 `scripts/wbi-sign.ps1
 - [x] 项目骨架 & Agent 定义
 - [x] WBI 签名算法
 - [x] B站视频元信息获取
-- [x] AI 摘要 (Layer 1)
-- [x] 弹幕分析 (Layer 2)
-- [x] Obsidian CLI 写入
+- [x] AI 字幕全文转录 (Layer 1)
+- [x] AI 摘要 (Layer 2)
+- [x] 弹幕分析 (Layer 3)
+- [x] 直接写入 vault 目录 (替代 CLI)
 - [ ] 播客剪藏 (RSS / Show Notes 解析)
 - [ ] 豆瓣剪藏 (书/电影元数据抓取)
 - [ ] Obsidian 社区插件化
