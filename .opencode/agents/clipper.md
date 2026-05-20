@@ -2,51 +2,88 @@
 
 将 Bilibili 视频裁剪为结构化的 Obsidian 笔记，写入指定 vault。
 
-## Usage
+## 流程概述
 
-用户说"剪藏这个视频"并提供 B站链接时，执行以下流程：
+脚本负责抓取原材料，Agent（我）负责思考加工。
 
-### Step 1: 解析链接
+```
+Step 1: 脚本抓取 → 输出 raw JSON
+Step 2: Agent 阅读原材料
+Step 3: Agent 摘要+思考+关联 vault → 写出笔记
+```
 
-从用户提供的 URL 中提取 BVID（如 `BV1xx...`）。支持的 URL 格式：
-- `https://www.bilibili.com/video/BV1xx...`
-- `https://b23.tv/xxxxx`（短链接，需先解析）
-- 直接提供 `BV1xx...`
+---
 
-### Step 2: 执行剪藏
+## Step 1: 抓取原材料
 
 ```powershell
 cd D:\Coding\Agentic\projects\obsidian_manager
-powershell -File scripts\bili-clipper.ps1 -Url "<用户提供的URL或BVID>"
+powershell -File scripts\bili-clipper.ps1 -Url "<URL或BVID>"
 ```
 
 可选参数：
 - `-Vault`：目标 vault，默认 `brew`
-- `-Folder`：目标文件夹，默认 `读书看报`
+- `-Folder`：目标文件夹，默认 `Bilibili`
 
-#### Step 3: 返回结果
+脚本抓取的内容：
+- **字幕全文**（`subtitle.raw_text`）— B站 AI 语音识别的完整文稿
+- **AI 摘要**（`ai_summary.summary` + `outline`）— B站官方摘要
+- **热评**（`comments.top_hot`）— 高赞评论列表
+- **元数据**（`video`）— 标题、UP主、播放量、标签等
 
-向用户展示：
-- 笔记标题
-- 目标 vault 和路径
-- 内容来源（subtitle+summary / subtitle_only / ai_summary / danmaku / metadata_only）
-- 提示用户可以在 Obsidian 中打开编辑
+输出到 `output/raw/{bvid}.json`
 
-## 退化策略（4层）
+---
 
-脚本按优先级尝试以下内容来源，直到成功：
+## Step 2: 阅读原材料
 
-| 层 | 来源 | 说明 | 依赖 |
-|---|---|---|---|
-| 1 | **Subtitle + AI Summary** | Player API (`/x/player/v2`) 获取 AI 字幕 URL → 下载字幕 JSON → 转录完整文稿，同时获取 AI 摘要 | Cookie |
-| 2 | **Subtitle only** | 有字幕但 AI 摘要不可用时 | Cookie |
-| 3 | **AI Summary** | `/x/web-interface/view/conclusion/get`（WBI签名） | Cookie |
-| 4 | **Danmaku** | `comment.bilibili.com/{cid}.xml` 弹幕文本 | 无 |
-| 5 | **Metadata only** | 仅标题、描述、统计信息 | 无 |
+读取 raw JSON，理解视频内容。
+用 search/grep 搜索 vault 中已有的相关笔记，寻找关联点。
 
-## 注意事项
+```powershell
+# 查看 raw 文件
+type D:\Coding\Agentic\projects\obsidian_manager\output\raw\{bvid}.json
 
-- 需要 Bilibili Cookie 才能获取字幕和 AI 摘要。如果未配置，会降级为弹幕分析或仅保存元信息
-- 字幕数据来自 Bilibili AI 自动识别，可能存在少量错别字
-- 笔记的 `status` 属性默认为 `inbox`，方便后续在 Obsidian 中批量处理
-- 字幕 URL 带有时间戳认证（`auth_key`），需在获取后立即使用
+# 搜索 vault 中已有笔记
+Select-String -Path "D:\notebooks\Lmc\brew\**\*.md" -Pattern "关键词"
+```
+
+---
+
+## Step 3: 生成笔记
+
+基于原材料，我负责：
+1. **摘要提炼** — 不是粘贴字幕原文，而是用自己的话总结核心观点
+2. **评论洞察** — 挑出有意思的评论，说明社区态度
+3. **知识关联** — 指向 vault 中相关的已有笔记
+4. **标注来源** — content_source = `ai_curated`
+
+笔记直接写入 vault 目录。
+
+```powershell
+# 写入笔记
+Set-Content -Path "D:\notebooks\Lmc\brew\Bilibili\{title}.md" -Value $content -Encoding UTF8
+```
+
+---
+
+## 退化策略
+
+脚本负责的抓取层：
+
+| 层 | 内容 | 依赖 |
+|---|---|---|
+| 1 | AI 字幕全文 | Cookie |
+| 2 | AI 摘要 | Cookie |
+| 3 | 热评 | Cookie |
+| 4 | 弹幕 | 无 |
+| 5 | 仅元数据 | 无 |
+
+Agent 负责的思考层：
+
+| 内容 | 说明 |
+|---|---|
+| 摘要提炼 | 我读原文后用自己的话总结 |
+| 评论洞察 | 挑高赞评论，归纳社区反应 |
+| 知识关联 | 搜索 vault 中相关主题 |
+| 笔记风格 | 结构化、可读、有洞见 |

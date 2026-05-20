@@ -236,3 +236,38 @@ function Format-AiSummaryToText {
     }
     return $lines -join "`n"
 }
+
+function Get-VideoComments {
+    param(
+        [Parameter(Mandatory)] [string]$Aid,
+        [string]$Cookie = "",
+        [int]$Count = 5,
+        [string]$Sort = "2"
+    )
+    $url = "https://api.bilibili.com/x/v2/reply?type=1&oid=$Aid&pn=1&ps=$Count&sort=$Sort"
+    $body = Invoke-BiliHttp -Uri $url -Cookie $Cookie
+    $resp = $body | ConvertFrom-Json
+    if ($resp.code -ne 0 -or -not $resp.data.replies) { return $null }
+    $comments = @()
+    foreach ($reply in $resp.data.replies) {
+        $comments += @{
+            user    = $reply.member.uname
+            message = $reply.content.message
+            likes   = $reply.like
+            replies = $reply.rcount
+            time    = $reply.ctime
+        }
+    }
+    return @{ count = $resp.data.page.count; comments = $comments }
+}
+
+function Get-SubtitleRawText {
+    param($SubtitleData)
+    if (-not $SubtitleData -or -not $SubtitleData.segments) { return $null }
+    $texts = @()
+    foreach ($seg in $SubtitleData.segments) {
+        $t = $seg.content.Trim()
+        if ($t) { $texts += $t }
+    }
+    return $texts -join " "
+}
