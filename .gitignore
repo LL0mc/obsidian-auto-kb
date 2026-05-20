@@ -1,0 +1,12 @@
+# Sensitive config
+config.json
+
+# Output directory
+output/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
