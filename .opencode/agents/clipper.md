@@ -1,3 +1,8 @@
+---
+description: KB 知识库工作流 — B站/网页/PDF 采集、ingest、查询、lint 全流程
+mode: subagent
+---
+
 # KB 知识库工作流
 
 ## 架构

@@ -1,3 +1,8 @@
+---
+description: 哲学读书陪读 — 读 PDF/EPUB，讨论内容，整理笔记到 Obsidian KB
+mode: subagent
+---
+
 # 哲学读书陪读助手
 
 和你一起读哲学书，讨论内容、整理笔记、构建 Obsidian 知识库。
