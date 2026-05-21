@@ -1,68 +1,71 @@
-# Bilibili 知识剪藏助手
+# KB 知识库工作流
 
-将 Bilibili 视频裁剪为结构化的 Obsidian 笔记，写入指定 vault。
-
-## 流程概述
-
-脚本负责抓取原材料，Agent（我）负责思考加工。
+## 架构
 
 ```
-Step 1: 脚本抓取 → 输出 raw JSON
-Step 2: Agent 阅读原材料
-Step 3: Agent 摘要+思考+关联 vault → 写出笔记
+bili-clipper.ps1  →  kb/raw/bilibili/{bvid}.json  →  Agent Ingest
+                                                        ↓
+                                              kb/wiki/sources/
+                                              kb/wiki/concepts/
+                                              kb/wiki/index.md
+                                              kb/wiki/log.md
+```
+
+采集入口：
+- **B站**: `bili-clipper.ps1` → `kb/raw/bilibili/`
+- **网页**: Obsidian Web Clipper → `kb/raw/web/`
+- **PDF/其他**: 手动 → `kb/raw/`
+
+---
+
+## Ingest 流程（每笔新 raw 数据触发）
+
+读取 raw JSON 后，执行以下步骤：
+
+### 1. 写来源摘要
+写入 `kb/wiki/sources/summary-{slug}.md`，格式见 kb wiki schema。
+
+### 2. 写/更新概念笔记
+识别 raw 内容的核心概念（3-5 个），对每个：
+- 如果 `kb/wiki/concepts/{概念}.md` 已存在，更新它（补充新视角，更新 `updated` 字段）
+- 如果不存在，新建
+
+### 3. 建立互链
+- 概念笔记之间用 `[[需要链接的概念]]` 互链
+- 来源摘要末尾列出涉及的概念：`涉及概念： [[存在主义]]、[[马克思主义]]`
+
+### 4. 更新索引
+在 `kb/wiki/index.md` 添加：
+
+**来源摘要：**
+```markdown
+| 标题 | bilibili | BV1xxx | 概念A、概念B | 2026-05-20 |
+```
+
+**概念笔记：** 如果新建了概念页，也加到表格中。
+
+### 5. 追加日志
+```markdown
+## 2026-05-20
+
+- **Ingest**: B站视频《标题》 → `summary-{slug}.md`，涉及：概念A、概念B
 ```
 
 ---
 
-## Step 1: 抓取原材料
+## 常用命令
 
 ```powershell
+# B站剪藏
 cd D:\Coding\Agentic\projects\obsidian_manager
-powershell -File scripts\bili-clipper.ps1 -Url "<URL或BVID>"
-```
+powershell -File scripts\bili-clipper.ps1 -Url "<URL>"
+# 默认输出到 kb/raw/bilibili/{bvid}.json
 
-可选参数：
-- `-Vault`：目标 vault，默认 `brew`
-- `-Folder`：目标文件夹，默认 `Bilibili`
+# 查看 raw JSON
+type D:\notebooks\Lmc\brew\kb\raw\bilibili\{bvid}.json
 
-脚本抓取的内容：
-- **字幕全文**（`subtitle.raw_text`）— B站 AI 语音识别的完整文稿
-- **AI 摘要**（`ai_summary.summary` + `outline`）— B站官方摘要
-- **热评**（`comments.top_hot`）— 高赞评论列表
-- **元数据**（`video`）— 标题、UP主、播放量、标签等
-
-输出到 `output/raw/{bvid}.json`
-
----
-
-## Step 2: 阅读原材料
-
-读取 raw JSON，理解视频内容。
-用 search/grep 搜索 vault 中已有的相关笔记，寻找关联点。
-
-```powershell
-# 查看 raw 文件
-type D:\Coding\Agentic\projects\obsidian_manager\output\raw\{bvid}.json
-
-# 搜索 vault 中已有笔记
+# 搜索 vault 已有笔记
 Select-String -Path "D:\notebooks\Lmc\brew\**\*.md" -Pattern "关键词"
-```
-
----
-
-## Step 3: 生成笔记
-
-基于原材料，我负责：
-1. **摘要提炼** — 不是粘贴字幕原文，而是用自己的话总结核心观点
-2. **评论洞察** — 挑出有意思的评论，说明社区态度
-3. **知识关联** — 指向 vault 中相关的已有笔记
-4. **标注来源** — content_source = `ai_curated`
-
-笔记直接写入 vault 目录。
-
-```powershell
-# 写入笔记
-Set-Content -Path "D:\notebooks\Lmc\brew\Bilibili\{title}.md" -Value $content -Encoding UTF8
 ```
 
 ---

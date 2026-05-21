@@ -1,7 +1,7 @@
 ﻿param(
     [Parameter(Mandatory)] [string]$Url,
     [string]$Vault = "brew",
-    [string]$Folder = "Bilibili"
+    [string]$KbDir = ""  # e.g. D:\notebooks\Lmc\brew\kb
 )
 
 . "$PSScriptRoot\bili-api.ps1"
@@ -14,7 +14,7 @@ if (Test-Path $ConfigPath) {
 }
 $Cookie = if ($config) { $config.bilibili_cookie } else { $env:BILI_COOKIE }
 if (-not $Vault -and $config) { $Vault = $config.default_vault }
-if (-not $Folder -and $config) { $Folder = $config.default_folder }
+if (-not $KbDir -and $config) { $KbDir = $config.kb_dir }
 
 Write-Host ""
 Write-Host "=== Bilibili Raw Data Fetcher ===" -ForegroundColor Cyan
@@ -102,7 +102,7 @@ if ($Cookie) {
 }
 
 Write-Host "[4/4] Saving raw data..." -ForegroundColor Cyan
-$rawDir = "$ProjectRoot\output\raw"
+$rawDir = "$KbDir\raw\bilibili"
 if (-not (Test-Path $rawDir)) { New-Item -ItemType Directory -Path $rawDir -Force | Out-Null }
 $rawPath = "$rawDir\$bvid.json"
 $rawData | ConvertTo-Json -Depth 10 | Set-Content -Path $rawPath -Encoding UTF8
@@ -117,5 +117,5 @@ return @{
     bvid     = $bvid
     raw_path = $rawPath
     vault    = $Vault
-    folder   = $Folder
+    kb_dir   = $KbDir
 }
