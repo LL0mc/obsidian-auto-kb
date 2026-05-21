@@ -107,6 +107,7 @@ powershell -File scripts\bili-clipper.ps1 -Url "https://www.bilibili.com/video/B
 | 操作 | 触发方式 | Agent 执行动作 |
 |---|---|---|
 | **Ingest** | raw 目录有新文件 | 写来源摘要 → 创建/更新概念页 → 互链 → 更新索引和日志 |
+| **Reading** | 用户发起读书会话 | 读 PDF/EPUB → 章节笔记 → 概念抽取 → 讨论 → 入库 |
 | **Query** | 用户提问 | 读索引定位相关页 → 综合回答 |
 | **Lint** | 定期/手动 | 扫全库找矛盾/孤立页/缺失概念/过时信息 |
 
