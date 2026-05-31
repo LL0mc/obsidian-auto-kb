@@ -1,127 +1,113 @@
 # Obsidian Manager — Personal Knowledge Base Workflow
 
-通用知识库工作流：从多种外部来源采集原材料 → Agent 自动摘要、提取概念、关联 vault → 构建可检索、可链接的个人知识图谱。
+从多种外部来源采集内容 → Agent 自动摘要、提取概念、写入 Obsidian vault → 构建可检索、可链接的个人知识图谱。
 
-## 架构
+## Agents
 
-```
-采集入口                         加工层 (Agent)                  知识库 (vault)
-┌──────────┐    raw JSON/MD
-│ B站剪藏  │ ──────────────────┐
-│ (PS脚本) │                   ▼
-└──────────┘          ┌──────────────────┐     ┌───────────────┐
-                      │                  │     │ wiki/sources/ │
-┌──────────┐          │  Agent Ingest    │────▶│  (单篇摘要)    │
-│ 网页剪藏 │─────────▶│                  │     ├───────────────┤
-│ (WC插件) │          │  1. 读 raw       │     │ wiki/concepts/│
-└──────────┘          │  2. 写来源摘要   │────▶│  (概念笔记)    │
-                      │  3. 抽概念+建页  │     ├───────────────┤
-┌──────────┐          │  4. 互链+索引    │     │ wiki/index.md │
-│ PDF/其他 │─────────▶│  5. 追加日志     │────▶│  (总目录)      │
-│ (手动)   │          │                  │     ├───────────────┤
-└──────────┘          └──────────────────┘     │ wiki/log.md   │
-                                               │  (操作日志)    │
-                    ┌──────────────────┐       └───────────────┘
-                    │  Agent Query     │
-                    │  你问我 → 从 wiki │
-                    │  综合回答        │
-                    └──────────────────┘
-```
+位于 `.opencode/agents/`，在对话中用 `@agent_name` 触发：
 
-## 文件结构
+| Agent | 功能 |
+|-------|------|
+| **`@clipper`** | KB 知识库摄取 — 读取 `kb/raw/` 中的原始材料 → 写来源摘要 → 创建/更新概念笔记 → 更新索引和日志 |
+| **`@reading`** | 哲学读书陪读 — 读 PDF/EPUB，三种模式（章节推进、段落讨论、全书回顾），整理笔记到 KB |
+
+## 项目文件结构
 
 ```
 obsidian_manager/
-├── opencode.jsonc              # Opencode 配置
-├── config.json                 # Cookie & vault 路径 (gitignored)
+├── opencode.jsonc                    # Opencode 配置
+├── config.json                       # Cookie & vault 路径 (gitignored)
 ├── .opencode/agents/
-│   └── clipper.md              # 工作流定义 (采集/ingest/查询/lint)
+│   ├── clipper.md                    # KB 摄取工作流
+│   └── reading.md                    # 读书陪读工作流
 ├── scripts/
-│   ├── wbi-sign.ps1            # WBI 签名算法
-│   ├── bili-api.ps1            # B站 API 核心模块
-│   └── bili-clipper.ps1        # B站剪藏脚本 (输出到 kb/raw/bilibili/)
-└── templates/
-    └── bilibili-clip.md        # 笔记模板参考
+│   ├── bili-api.ps1                  # B站 API 核心模块
+│   ├── bili-clipper.ps1              # B站剪藏脚本 (输出到 kb/raw/bilibili/)
+│   ├── wbi-sign.ps1                  # WBI 签名算法
+│   └── deepseek-export.user.js       # Tampermonkey 脚本：DeepSeek 对话导出
+├── templates/
+│   └── bilibili-clip.md              # B站剪藏笔记模板参考
+├── archive/                          # 历史中间文件（不直接使用）
+└── output/                           # 查询/lint 报告 (Agent 写入)
 ```
 
-## 知识库目录结构 (位于 vault 内)
+## 知识库结构 (vault: `brew`)
 
 ```
-brew/
-├── kb/
-│   ├── raw/
-│   │   ├── bilibili/           # B站剪藏 raw JSON (由 clipper 写入)
-│   │   └── web/                # 网页剪藏 (由 Obsidian Web Clipper 写入)
-│   ├── wiki/
-│   │   ├── index.md            # 总目录 (Agent 维护)
-│   │   ├── log.md              # 操作日志 (Agent 维护)
-│   │   ├── concepts/           # 概念笔记 (跨来源抽取)
-│   │   └── sources/            # 单篇来源摘要
-│   └── outputs/                # 查询结果 / lint 报告
-└── .opencode/agents/
-    └── wiki.md                 # Schema 定义 (目录结构/命名/frontmatter/流程)
+brew/kb/
+├── raw/                              # 原始材料（永不修改）
+│   ├── bilibili/                     # B站剪藏 raw JSON
+│   ├── web/                          # 网页剪藏 (Obsidian Web Clipper)
+│   └── deepseek/                     # DeepSeek 对话导出 (Tampermonkey → Local REST API)
+├── wiki/                             # Agent 维护的知识库
+│   ├── index.md                      # 总目录（每次 ingest 后更新）
+│   ├── log.md                        # 操作日志（纯追加）
+│   ├── _schema.md                    # 目录结构 + frontmatter 规范
+│   ├── concepts/                     # 概念笔记（跨来源抽取的知识节点）
+│   └── sources/                      # 单篇来源摘要
+└── outputs/                          # 查询结果 / lint 报告
 ```
 
 ## 前置条件
 
 | 依赖 | 说明 |
-|---|---|
-| **Obsidian** | 使用中，vault 已打开 |
-| **Bilibili Cookie** | 需登录后提取 SESSDATA |
-| **Obsidian Web Clipper** | 浏览器插件，配置保存到 `kb/raw/web/` |
-
-## 安装
-
-### 1. 配置 Cookie
-
-```powershell
-# 浏览器 F12 → Console:
-document.cookie.split('; ').find(c=>c.startsWith('SESSDATA='))
-# 写入 config.json
-```
-
-### 2. 配置 Obsidian Web Clipper
-
-插件设置 → 连接本地 vault `D:\notebooks\Lmc\brew` → 默认目录设为 `kb/raw/web/`
+|------|------|
+| **Obsidian** | vault `brew` 已打开 |
+| **Opencode** | TUI 或 Obsidian 插件均可 |
+| **Bilibili Cookie** | 需登录后提取 SESSDATA（用于 B站剪藏） |
+| **Obsidian Local REST API 插件** | 让 Tampermonkey 脚本直接写入 vault（端口 27124） |
+| **Tampermonkey** | 浏览器扩展，运行 DeepSeek 导出脚本 |
 
 ## 使用
+
+### DeepSeek 对话导出
+
+1. 打开 DeepSeek 任意对话页面（`https://chat.deepseek.com/a/chat/s/xxx`）
+2. 页面左下角点击 **📝 Export**
+3. 文件自动保存到 `kb/raw/deepseek/`
+4. 通知 `@clipper` 进行 ingest
 
 ### B站剪藏
 
 ```powershell
 cd D:\Coding\Agentic\projects\obsidian_manager
-powershell -File scripts\bili-clipper.ps1 -Url "https://www.bilibili.com/video/BV1wYL36LEvs"
-# → kb/raw/bilibili/{bvid}.json → Agent 自动 ingest
+powershell -File scripts\bili-clipper.ps1 -Url "https://www.bilibili.com/video/BVxxx"
+# → kb/raw/bilibili/{bvid}.json → 通知 @clipper ingest
 ```
 
 ### 网页剪藏
 
-浏览器点插件图标 → 自动保存到 `kb/raw/web/{title}.md` → 通知 Agent 进行 ingest
+安装 [Obsidian Web Clipper](https://obsidian.com/clipper) 浏览器插件 → 配置保存目录为 `kb/raw/web/` → 剪藏后通知 `@clipper` ingest。
 
-### 查询
+### 知识库查询
 
-直接问 Agent，Agent 会读知识库综合回答。
+直接对话提问即可，AI 会自动查询 `kb/wiki/` 综合回答。
 
 ## 工作流
 
-| 操作 | 触发方式 | Agent 执行动作 |
-|---|---|---|
-| **Ingest** | raw 目录有新文件 | 写来源摘要 → 创建/更新概念页 → 互链 → 更新索引和日志 |
-| **Reading** | 用户发起读书会话 | 读 PDF/EPUB → 章节笔记 → 概念抽取 → 讨论 → 入库 |
-| **Query** | 用户提问 | 读索引定位相关页 → 综合回答 |
-| **Lint** | 定期/手动 | 扫全库找矛盾/孤立页/缺失概念/过时信息 |
+| 操作 | 触发 | Agent | 动作 |
+|------|------|-------|------|
+| **Ingest** | `raw/` 有新文件 | `@clipper` | 读 raw → 写来源摘要 → 创建/更新概念页 → 互链 → 更新索引和日志 |
+| **Reading** | 开始读书会话 | `@reading` | 读 PDF/EPUB → 章节笔记 → 概念抽取 → 讨论 → 入库 |
+| **Query** | 用户提问 | — | 读索引定位相关页 → 综合回答 |
 
 ## 技术细节
 
-### 内容理解的四层降级策略 (B站)
+### B站内容降级策略
 
-| Layer | 方法 | 接口 | 认证 |
-|---|---|---|---|
-| 1 | AI 字幕全文转录 + 摘要 | `GET /x/player/v2` → 字幕 JSON | Cookie |
-| 2 | B站官方 AI 摘要 | `GET /x/web-interface/view/conclusion/get` | WBI 签名 + Cookie |
-| 3 | 弹幕时间轴分析 | `GET /comment.bilibili.com/{cid}.xml` | 无 |
-| 4 | 仅元信息 | `GET /x/web-interface/view` | 无 |
+| Layer | 内容 | 依赖 |
+|-------|------|------|
+| 1 | AI 字幕全文 + 摘要 | Cookie |
+| 2 | B站官方 AI 摘要 | WBI 签名 + Cookie |
+| 3 | 弹幕分析 | 无 |
+| 4 | 仅元数据 | 无 |
 
-### HTTP 客户端
+### DeepSeek 导出技术栈
 
-使用 `[System.Net.HttpWebRequest]` 而非 `Invoke-WebRequest`，因为 PowerShell 5.1 的 `Invoke-WebRequest` 会过滤 `Cookie` 头。
+```
+Tampermonkey script (deepseek-export.user.js)
+  → 提取对话消息 (User/Assistant 分离)
+  → HTML → Markdown 转换 (内联转换器，零外部依赖)
+  → POST Obsidian Local REST API (https://127.0.0.1:27124/vault/kb/raw/deepseek/...)
+  → 文件落盘 → @clipper ingest
+```
