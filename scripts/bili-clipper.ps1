@@ -12,9 +12,18 @@ $config = $null
 if (Test-Path $ConfigPath) {
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 }
-$Cookie = if ($config) { $config.bilibili_cookie } else { $env:BILI_COOKIE }
 if (-not $Vault -and $config) { $Vault = $config.default_vault }
 if (-not $KbDir -and $config) { $KbDir = $config.kb_dir }
+
+# Cookie 优先级: vault cookie file (Tampermonkey 同步) > config.json > env
+$Cookie = $null
+$VaultCookieFile = if ($Vault -and $config.vaults.$Vault) { "$($config.vaults.$Vault)\kb\raw\bilibili\_cookie.json" } else { $null }
+if ($VaultCookieFile -and (Test-Path $VaultCookieFile)) {
+    $vc = Get-Content $VaultCookieFile -Raw | ConvertFrom-Json
+    if ($vc.sessdata) { $Cookie = "SESSDATA=$($vc.sessdata)" }
+}
+if (-not $Cookie -and $config) { $Cookie = $config.bilibili_cookie }
+if (-not $Cookie) { $Cookie = $env:BILI_COOKIE }
 
 Write-Host ""
 Write-Host "=== Bilibili Raw Data Fetcher ===" -ForegroundColor Cyan

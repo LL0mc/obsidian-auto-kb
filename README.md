@@ -8,7 +8,7 @@
 
 | Agent | 功能 |
 |-------|------|
-| **`@clipper`** | KB 知识库摄取 — 读取 `kb/raw/` 中的原始材料 → 写来源摘要 → 创建/更新概念笔记 → 更新索引和日志 |
+| **`@clipper`** | KB 知识库摄取 — 读取 `kb/raw/` 中的原始材料 → 校验字幕一致性 → 写来源摘要 → 创建/更新概念笔记 → 更新索引和日志 |
 | **`@reading`** | 哲学读书陪读 — 读 PDF/EPUB，三种模式（章节推进、段落讨论、全书回顾），整理笔记到 KB |
 
 ## 项目文件结构
@@ -18,13 +18,14 @@ obsidian_manager/
 ├── opencode.jsonc                    # Opencode 配置
 ├── config.json                       # Cookie & vault 路径 (gitignored)
 ├── .opencode/agents/
-│   ├── clipper.md                    # KB 摄取工作流
+│   ├── clipper.md                    # KB 摄取工作流（含字幕校验 + 重试）
 │   └── reading.md                    # 读书陪读工作流
 ├── scripts/
-│   ├── bili-api.ps1                  # B站 API 核心模块
-│   ├── bili-clipper.ps1              # B站剪藏脚本 (输出到 kb/raw/bilibili/)
-│   ├── wbi-sign.ps1                  # WBI 签名算法
-│   └── deepseek-export.user.js       # Tampermonkey 脚本：DeepSeek 对话导出
+│   ├── bili-api.ps1                  # B站 API 核心模块（WBI 签名 + 视频/字幕/评论 API）
+│   ├── bili-fetch.ps1                # PowerShell 入口：全量抓取（标题/字幕/AI摘要/评论）
+│   ├── bili-clipper.user.js          # Tampermonkey 脚本：B站页面一键抓取到 Obsidian
+│   ├── wbi-sign.ps1                  # WBI 签名算法（mixin key + MD5）
+│   └── sync-token.ps1                # 自动同步 Obsidian API Token + B站 Cookie
 ├── templates/
 │   └── bilibili-clip.md              # B站剪藏笔记模板参考
 ├── archive/                          # 历史中间文件（不直接使用）
@@ -36,9 +37,9 @@ obsidian_manager/
 ```
 brew/kb/
 ├── raw/                              # 原始材料（永不修改）
-│   ├── bilibili/                     # B站剪藏 raw JSON
+│   ├── bilibili/                     # B站剪藏 Markdown（{标题前50字}_{BVID}.md）
 │   ├── web/                          # 网页剪藏 (Obsidian Web Clipper)
-│   └── deepseek/                     # DeepSeek 对话导出 (Tampermonkey → Local REST API)
+│   └── deepseek/                     # DeepSeek 对话导出
 ├── wiki/                             # Agent 维护的知识库
 │   ├── index.md                      # 总目录（每次 ingest 后更新）
 │   ├── log.md                        # 操作日志（纯追加）
@@ -54,25 +55,26 @@ brew/kb/
 |------|------|
 | **Obsidian** | vault `brew` 已打开 |
 | **Opencode** | TUI 或 Obsidian 插件均可 |
-| **Bilibili Cookie** | 需登录后提取 SESSDATA（用于 B站剪藏） |
-| **Obsidian Local REST API 插件** | 让 Tampermonkey 脚本直接写入 vault（端口 27124） |
-| **Tampermonkey** | 浏览器扩展，运行 DeepSeek 导出脚本 |
+| **B站 Cookie (SESSDATA)** | 用于 Tampermonkey 脚本。打开 B站 → 点 Tampermonkey 图标 → "设置 B站 SESSDATA" → 粘贴 Cookie 值 |
+| **Obsidian Local REST API 插件** | Tampermonkey 脚本写入 vault（端口 27124，HTTPS） |
+| **Tampermonkey** | 浏览器扩展，运行 bili-clipper.user.js |
 
 ## 使用
 
-### DeepSeek 对话导出
+### B站剪藏 — Tampermonkey（推荐）
 
-1. 打开 DeepSeek 任意对话页面（`https://chat.deepseek.com/a/chat/s/xxx`）
-2. 页面左下角点击 **📝 Export**
-3. 文件自动保存到 `kb/raw/deepseek/`
-4. 通知 `@clipper` 进行 ingest
+1. 打开任意 B站视频页
+2. 页面右下角点击 **⬇ KB**
+3. 脚本自动抓取标题 → 字幕 → 评论
+4. 推送到 Obsidian `kb/raw/bilibili/{标题}_{BVID}.md`
+5. 通知 `@clipper` 进行 ingest
 
-### B站剪藏
+### B站剪藏 — PowerShell
 
 ```powershell
 cd D:\Coding\Agentic\projects\obsidian_manager
-powershell -File scripts\bili-clipper.ps1 -Url "https://www.bilibili.com/video/BVxxx"
-# → kb/raw/bilibili/{bvid}.json → 通知 @clipper ingest
+powershell -File scripts\bili-fetch.ps1 -Url "https://www.bilibili.com/video/BVxxx"
+# → kb/raw/bilibili/{标题前50}_{BVID}.md → 通知 @clipper ingest
 ```
 
 ### 网页剪藏
@@ -87,27 +89,45 @@ powershell -File scripts\bili-clipper.ps1 -Url "https://www.bilibili.com/video/B
 
 | 操作 | 触发 | Agent | 动作 |
 |------|------|-------|------|
-| **Ingest** | `raw/` 有新文件 | `@clipper` | 读 raw → 写来源摘要 → 创建/更新概念页 → 互链 → 更新索引和日志 |
+| **Ingest** | `raw/` 有新文件 | `@clipper` | 校验字幕 → 写来源摘要 → 创建/更新概念页 → 互链 → 更新索引和日志 |
 | **Reading** | 开始读书会话 | `@reading` | 读 PDF/EPUB → 章节笔记 → 概念抽取 → 讨论 → 入库 |
 | **Query** | 用户提问 | — | 读索引定位相关页 → 综合回答 |
 
 ## 技术细节
 
-### B站内容降级策略
-
-| Layer | 内容 | 依赖 |
-|-------|------|------|
-| 1 | AI 字幕全文 + 摘要 | Cookie |
-| 2 | B站官方 AI 摘要 | WBI 签名 + Cookie |
-| 3 | 弹幕分析 | 无 |
-| 4 | 仅元数据 | 无 |
-
-### DeepSeek 导出技术栈
+### 采集架构
 
 ```
-Tampermonkey script (deepseek-export.user.js)
-  → 提取对话消息 (User/Assistant 分离)
-  → HTML → Markdown 转换 (内联转换器，零外部依赖)
-  → POST Obsidian Local REST API (https://127.0.0.1:27124/vault/kb/raw/deepseek/...)
-  → 文件落盘 → @clipper ingest
+Tampermonkey (浏览器端)                        PowerShell (命令行)
+  │                                              │
+  ├─ fetch + credentials:include                ├─ WebRequest + Cookie 头
+  ├─ x/player/v2 → 字幕                         ├─ x/player/v2 → 字幕
+  ├─ x/v2/reply/main → 评论                     ├─ conclusion/get (WBI) → AI摘要
+  └─ PUT Obsidian REST API → vault              └─ 直接写文件 → vault
 ```
+
+### B站 API 说明
+
+| 接口 | 是否需要 | 是否需要 WBI 签名 |
+|------|----------|-------------------|
+| `x/web-interface/view` | 视频基本信息 | 否 |
+| `x/player/v2` | 字幕（推荐，免 WBI） | **否** |
+| `x/player/wbi/v2` | 字幕（备选） | 是 |
+| `x/web-interface/view/conclusion/get` | AI 摘要 | 是 |
+| `x/v2/reply/main` | 评论 | 否 |
+
+### 字幕校验机制（@clipper Ingest Step 0）
+
+标题中文字符与前 5 条字幕对比，交集 < 10% 则判定内容不匹配 → 询问用户是否重抓 → 最多重试 3 次（间隔 2 秒）。
+
+### 已知限制
+
+| 问题 | 原因 | 现状 |
+|------|------|------|
+| AI 摘要浏览器端 -403 | SESSDATA SameSite 属性限制跨子域 Cookie 发送 | PowerShell 端可用，浏览器端暂时跳过 |
+| 字幕 CDN 偶发内容错乱 | B站 CDN auth_key 时效/缓存问题 | 已加字符重叠校验 + 自动重试兜底 |
+| 字幕内容为空 | 视频可能无 AI 字幕 | 脚本静默跳过，`@clipper` 校验前检查 |
+
+## 设计反思 & 经验记录
+
+详见 `docs/lessons.md`。

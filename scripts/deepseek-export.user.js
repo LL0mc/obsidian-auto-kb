@@ -1,4 +1,4 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         DeepSeek Chat Exporter (Adapted for KB)
 // @namespace    http://tampermonkey.net/
 // @version      1.1.0
@@ -22,7 +22,7 @@
     answerMain:    '.ds-assistant-message-main-content',
   };
 
-  // === HTML → Markdown converter (no external deps) ===
+  // === HTML 鈫?Markdown converter (no external deps) ===
   function htmlToMd(html) {
     if (!html) return '';
     let md = html;
@@ -167,7 +167,7 @@
   // === Obsidian Local REST API config ===
   const OBSIDIAN = {
     base: 'https://127.0.0.1:27124',
-    token: 'YOUR_OBSIDIAN_API_TOKEN', // 改为你的 Obsidian Local REST API token
+    token: 'YOUR_OBSIDIAN_TOKEN_HERE', // 鏀逛负浣犵殑 Obsidian Local REST API token
     dir: 'kb/raw/deepseek',
   };
 
@@ -197,7 +197,7 @@
     a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    return 'Obsidian offline — downloaded instead';
+    return 'Obsidian offline 鈥?downloaded instead';
   }
 
   // === Button (bottom-left, won't overlap native UI) ===
@@ -205,7 +205,7 @@
   function addButton() {
     if (btn) return;
     btn = document.createElement('div');
-    btn.textContent = '📝 Export';
+    btn.textContent = '馃摑 Export';
     Object.assign(btn.style, {
       position: 'fixed', left: '16px', bottom: '100px', zIndex: 999999,
       padding: '8px 14px', background: '#3964fe', color: '#fff',
@@ -243,3 +243,4 @@
     waitForChat();
   }
 })();
+

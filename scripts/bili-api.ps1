@@ -140,7 +140,13 @@ function Get-VideoSubtitle {
         [string]$Cookie = "",
         [string]$Lang = "ai-zh"
     )
-    $playerUrl = "https://api.bilibili.com/x/player/v2?aid=$Aid&cid=$Cid"
+    # Use WBI-signed player endpoint (wbi/v2 instead of v2)
+    $keys = Get-WbiKeys -Cookie $Cookie
+    if (-not $keys) { return $null }
+    $params = @{ aid = $Aid; cid = $Cid }
+    $signed = Get-WbiSignedParams -Params $params -ImgKey $keys.img_key -SubKey $keys.sub_key
+    $query = "aid=$Aid&cid=$Cid&wts=$($signed.wts)&w_rid=$($signed.w_rid)"
+    $playerUrl = "https://api.bilibili.com/x/player/wbi/v2?$query"
     $body = Invoke-BiliHttp -Uri $playerUrl -Cookie $Cookie
     $resp = $body | ConvertFrom-Json
     if ($resp.code -ne 0 -or -not $resp.data.subtitle.subtitles) {

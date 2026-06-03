@@ -25,7 +25,13 @@ bili-clipper.ps1  →  kb/raw/bilibili/{bvid}.json  →  Agent Ingest
 
 ## Ingest 流程（每笔新 raw 数据触发）
 
-读取 raw JSON 后，执行以下步骤：
+读取 raw 数据后，执行以下步骤：
+
+### 0. 校验字幕与标题一致性
+
+提取标题中的所有中文字符，提取前 5 条字幕中的所有中文字符。如果二者交集占比 < 10%，**询问用户**："字幕内容（预览：前50字）似乎与标题「标题」不一致，是否重新抓取？"
+- 如果用户确认不一致 → 重新抓取字幕（调用脚本重写文件），最多重试 3 次。每次重新抓取前等待 2 秒。成功后更新 raw 数据继续流程。3 次均失败则跳过字幕处理，在日志中记录 `[字幕校验失败-已重试3次]`。
+- 如果用户说没问题 → 继续使用当前字幕。
 
 ### 1. 写来源摘要
 写入 `kb/wiki/sources/summary-{slug}.md`，格式见 kb wiki schema。
@@ -63,14 +69,14 @@ bili-clipper.ps1  →  kb/raw/bilibili/{bvid}.json  →  Agent Ingest
 ```powershell
 # B站剪藏
 cd D:\Coding\Agentic\projects\obsidian_manager
-powershell -File scripts\bili-clipper.ps1 -Url "<URL>"
-# 默认输出到 kb/raw/bilibili/{bvid}.json
+powershell -File scripts\bili-fetch.ps1 -Url "<URL>"
+# 输出到 kb/raw/bilibili/{标题}_{BVID}.md
 
-# 查看 raw JSON
-type D:\notebooks\Lmc\brew\kb\raw\bilibili\{bvid}.json
+# 重新抓取字幕（校验失败时用）
+Start-Sleep -Seconds 2; powershell -File scripts\bili-fetch.ps1 -Url "https://www.bilibili.com/video/{BVID}"
 
-# 搜索 vault 已有笔记
-Select-String -Path "D:\notebooks\Lmc\brew\**\*.md" -Pattern "关键词"
+# 查看 raw 文件
+Get-ChildItem D:\notebooks\Lmc\brew\kb\raw\bilibili\ -Filter "*{BVID}*"
 ```
 
 ---
