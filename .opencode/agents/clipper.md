@@ -5,21 +5,27 @@ mode: subagent
 
 # KB 知识库工作流
 
-## 架构
+Vault 根目录：`D:\notebooks\Lmc\brew`（通过项目根目录 `.env` 的 `OBSIDIAN_VAULT_PATH` 配置）
 
-```
-bili-clipper.ps1  →  kb/raw/bilibili/{bvid}.json  →  Agent Ingest
-                                                        ↓
-                                              kb/wiki/sources/
-                                              kb/wiki/concepts/
-                                              kb/wiki/index.md
-                                              kb/wiki/log.md
-```
+本 Agent 根据用户意图自动路由到不同子流程：
 
-采集入口：
-- **B站**: `bili-clipper.ps1` → `kb/raw/bilibili/`
-- **网页**: Obsidian Web Clipper → `kb/raw/web/`
-- **PDF/其他**: 手动 → `kb/raw/`
+| 用户说 | 路由到 |
+|--------|--------|
+| "ingest" / 提供 URL / "处理 raw" | Ingest 流程 |
+| "lint" / "健康检查" / "检查 wiki" | Lint 流程 |
+| "crosslink" / "补链接" / "关联页面" | Crosslink 流程 |
+| "query" / "搜索" / 问知识问题 | Query 流程 |
+
+---
+
+## 基础信息
+
+- 采集入口：
+  - **B站**: `bili-clipper.ps1` / `bili-fetch.ps1` → `kb/raw/bilibili/`
+  - **网页**: Obsidian Web Clipper → `kb/raw/web/`
+  - **PDF/其他**: 手动 → `kb/raw/`
+- Vault 结构：wiki 文件在 `kb/wiki/` 下，含 `sources/`、`concepts/`、`index.md`、`log.md`
+- Skill 参考文件在 `.opencode/skills/`（obsidian-wiki 社区技能）
 
 ---
 
@@ -61,6 +67,51 @@ bili-clipper.ps1  →  kb/raw/bilibili/{bvid}.json  →  Agent Ingest
 
 - **Ingest**: B站视频《标题》 → `summary-{slug}.md`，涉及：概念A、概念B
 ```
+
+---
+
+## Lint 流程（健康检查）
+
+当用户要求检查 wiki 健康度时，读取 `.opencode/skills/wiki-lint/SKILL.md` 并按以下步骤执行。SKILL.md 已适配 `kb/wiki/` 子目录路径。
+
+### 检查项
+
+1. **孤儿页** — 零入链的页面
+2. **断链** — `[[wikilinks]]` 指向不存在的页面
+3. **缺 Frontmatter** — 缺 title / tags / created / updated 等字段
+4. **过期内容** — source 修改时间晚于页面更新时间
+5. **矛盾** — 跨页面说法冲突
+6. **Index 一致性** — `index.md` 跟实际文件清单匹配
+7. **溯源漂移** — 标记为 inferred 的比例过高
+
+### 输出
+
+结构化报告，每项列出具体页面和修复建议。追加到 `log.md`：
+
+```markdown
+- [TIMESTAMP] LINT issues_found=N orphans=X broken_links=Y stale=Z contradictions=W
+```
+
+---
+
+## Crosslink 流程（自动补链）
+
+当用户要求补链接时，读取 `.opencode/skills/cross-linker/SKILL.md` 并按以下步骤执行。
+
+### 流程
+
+1. 读取 `index.md` 获取全量页面清单
+2. 对每个页面扫描正文中未加链的概念名、实体名、别名
+3. 按匹配质量打分（精确名称匹配 > 共享标签 > 同项目）
+4. 只插入高/中置信度的链接
+5. 优先在首次出现处加 inline 链接，否则在 `## 相关` 段追加
+6. 报告 + 追加 `log.md`
+
+---
+
+## Query 流程（知识问答）
+
+当用户提问时，读取 `.opencode/skills/wiki-query/SKILL.md` 并按以下步骤执行。
 
 ---
 
