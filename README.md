@@ -24,6 +24,7 @@ obsidian_manager/
 │   ├── bili-api.ps1                  # B站 API 核心模块（WBI 签名 + 视频/字幕/评论 API）
 │   ├── bili-fetch.ps1                # PowerShell 入口：全量抓取（标题/字幕/AI摘要/评论）
 │   ├── bili-clipper.user.js          # Tampermonkey 脚本：B站页面一键抓取到 Obsidian
+│   ├── boss-jd-sync.user.js          # Tampermonkey 脚本：Boss直聘 JD → Obsidian targets/
 │   ├── wbi-sign.ps1                  # WBI 签名算法（mixin key + MD5）
 │   └── sync-token.ps1                # 自动同步 Obsidian API Token + B站 Cookie
 ├── templates/
@@ -80,6 +81,15 @@ powershell -File scripts\bili-fetch.ps1 -Url "https://www.bilibili.com/video/BVx
 ### 网页剪藏
 
 安装 [Obsidian Web Clipper](https://obsidian.com/clipper) 浏览器插件 → 配置保存目录为 `kb/raw/web/` → 剪藏后通知 `@clipper` ingest。
+
+### Boss直聘 JD 同步 — Tampermonkey
+
+保存到 brew vault `w_求职AI助理/targets/Auto-{公司}-{职位}.md`：
+
+1. 打开 Boss直聘职位详情页（`https://www.zhipin.com/job_detail/*`）
+2. 页面右下角点击 **📋 → Obsidian**
+3. 脚本自动提取 JD 信息 → 推送到 vault `w_求职AI助理/targets/`
+4. API 不可用时回退到浏览器下载
 
 ### 知识库查询
 
