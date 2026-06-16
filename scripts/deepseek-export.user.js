@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DeepSeek Chat Exporter (Adapted for KB)
 // @namespace    http://tampermonkey.net/
-// @version      2.3.0
+// @version      2.4.0
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
@@ -24,37 +24,52 @@
     answerMain: '.ds-markdown',
   };
 
-  // === UI helpers ===
-  var statusEl = null;
-  function showStatus(msg) {
-    if (!statusEl || !document.body.contains(statusEl)) {
-      statusEl = document.createElement('div');
-      statusEl.id = 'ds-export-status';
-      Object.assign(statusEl.style, {
-        position: 'fixed', left: '16px', bottom: '148px', zIndex: 999999,
-        padding: '6px 12px', background: '#222', color: '#0f0', border: 'none',
-        borderRadius: '4px', fontSize: '11px', fontFamily: 'monospace', lineHeight: '1.4',
-        display: 'none', whiteSpace: 'pre-wrap', maxWidth: '320px',
+  // === debug panel ===
+  var debugEl = null;
+  function log(msg) {
+    if (!debugEl || !document.body.contains(debugEl)) {
+      debugEl = document.createElement('div');
+      debugEl.id = 'ds-debug';
+      Object.assign(debugEl.style, {
+        position: 'fixed', left: '16px', bottom: '160px', zIndex: 999999,
+        padding: '8px 12px', background: 'rgba(0,0,0,0.85)', color: '#0f0',
+        border: '1px solid #3964fe', borderRadius: '6px',
+        fontSize: '11px', fontFamily: 'monospace', lineHeight: '1.5',
+        whiteSpace: 'pre-wrap', maxWidth: '360px', maxHeight: '200px',
+        overflowY: 'auto',
       });
-      document.body.appendChild(statusEl);
+      document.body.appendChild(debugEl);
     }
-    statusEl.textContent = msg;
-    statusEl.style.display = 'block';
+    var t = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+    debugEl.textContent = (debugEl.textContent ? debugEl.textContent + '\n' : '') + t;
+    debugEl.scrollTop = debugEl.scrollHeight;
   }
-
-  var btn = null;
-  function setBtnText(t) { if (btn) btn.textContent = t; }
 
   // === Core ===
   function getAuthToken() {
+    log('localStorage keys: ' + Object.keys(localStorage).join(', '));
     var raw = localStorage.getItem('userToken');
-    if (!raw) return null;
-    try { return JSON.parse(raw).value; } catch (e) { return null; }
+    if (!raw) { log('userToken not found'); return null; }
+    log('userToken raw[:50]: ' + raw.slice(0, 50));
+    try {
+      var parsed = JSON.parse(raw);
+      log('userToken parsed keys: ' + Object.keys(parsed).join(', '));
+      if (parsed.value) { log('token value length: ' + parsed.value.length); return parsed.value; }
+      log('no .value in parsed token');
+      return null;
+    } catch (e) {
+      log('token parse error: ' + e.message);
+      return null;
+    }
   }
 
   function getSessionId() {
-    var m = window.location.href.match(/\/s\/([^/?]+)/);
-    return m ? m[1] : null;
+    var url = window.location.href;
+    log('URL: ' + url);
+    var m = url.match(/\/s\/([^/?]+)/);
+    if (m) { log('sessionId: ' + m[1]); return m[1]; }
+    log('sessionId NOT FOUND in URL');
+    return null;
   }
 
   function getChatTitle(sessionData) {
@@ -67,19 +82,21 @@
 
   function apiFetchMessages(sessionId, token) {
     var url = API_HOST + '/api/v0/chat_history_messages?chat_session_id=' + encodeURIComponent(sessionId) + '&cache_version=0';
-    showStatus('Calling API...');
+    log('API URL: ' + url);
+    log('token[:10]: ' + token.slice(0, 10) + '...');
     return fetch(url, {
       headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' }
     }).then(function (r) {
-      showStatus('API status: ' + r.status);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      log('API status: ' + r.status + ' ' + r.statusText);
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
       return r.json();
     }).then(function (json) {
+      log('API code: ' + json.code + ', biz_code: ' + (json.data ? json.data.biz_code : 'no data'));
       if (json.code !== 0 || !json.data || json.data.biz_code !== 0) {
-        throw new Error('API error: ' + (json.msg || (json.data && json.data.biz_msg) || 'unknown'));
+        throw new Error(json.msg || (json.data && json.data.biz_msg) || 'unknown API error');
       }
-      var msgs = json.data.biz_data.chat_messages || [];
-      showStatus('API OK: ' + msgs.length + ' messages');
+      var count = (json.data.biz_data.chat_messages || []).length;
+      log('API messages count: ' + count);
       return json.data.biz_data;
     });
   }
@@ -98,6 +115,7 @@
     var msgs = [];
     var userEls = document.querySelectorAll(SEL.userMessage);
     var aiEls = document.querySelectorAll(SEL.aiMessage);
+    log('DOM user els: ' + userEls.length + ', ai els: ' + aiEls.length);
     var all = [];
     userEls.forEach(function (el) { all.push({ el: el, role: 'user' }); });
     aiEls.forEach(function (el) { all.push({ el: el, role: 'assistant' }); });
@@ -121,28 +139,31 @@
         if (msg.content || msg.thinkingMd) msgs.push(msg);
       }
     }
+    log('DOM collected: ' + msgs.length + ' messages');
     return msgs;
   }
 
   function findScrollContainer() {
     var areas = document.querySelectorAll('.ds-scroll-area--enabled, .ds-scroll-area');
-    for (var si = 0; si < areas.length; si++) { if (areas[si].scrollHeight > areas[si].clientHeight + 2) return areas[si]; }
+    for (var si = 0; si < areas.length; si++) { if (areas[si].scrollHeight > areas[si].clientHeight + 2) { log('scroll container: .ds-scroll-area'); return areas[si]; } }
     var allDivs = document.querySelectorAll('div');
     for (var di = 0; di < allDivs.length; di++) {
       var d = allDivs[di];
       if (d.scrollHeight > d.clientHeight + 2) {
         var s = getComputedStyle(d);
-        if (s.overflowY === 'auto' || s.overflowY === 'scroll') return d;
+        if (s.overflowY === 'auto' || s.overflowY === 'scroll') { log('scroll container: overflowY=' + s.overflowY); return d; }
       }
     }
+    log('no scroll container found');
     return null;
   }
 
   function doScrollLoad() {
     return new Promise(function (resolve) {
       var sc = findScrollContainer();
-      if (!sc) { showStatus('No scroll container found'); resolve([]); return; }
+      if (!sc) { resolve([]); return; }
 
+      log('scrollHeight=' + sc.scrollHeight + ', clientHeight=' + sc.clientHeight);
       var allMsgs = new Map();
       var savedPos = sc.scrollTop;
       var startedAt = Date.now();
@@ -152,28 +173,24 @@
       function done() {
         sc.scrollTop = savedPos;
         var result = Array.from(allMsgs.values());
-        showStatus('Scroll done: ' + result.length + ' unique msgs');
+        log('scroll done: ' + result.length + ' unique msgs');
         resolve(result);
       }
 
       function tick() {
-        if (Date.now() - startedAt > 60000) { done(); return; }
-
+        if (Date.now() - startedAt > 45000) { log('scroll timeout'); done(); return; }
         var fromDom = collectFromDOM();
         fromDom.forEach(function (m) { allMsgs.set(m.role + '::' + m.content.slice(0, 500), m); });
-
         var cur = sc.scrollTop;
         sc.scrollTop = cur - Math.max(sc.clientHeight * 0.6, 100);
-
         if (sc.scrollTop === prevPos) { stuckCount++; } else { stuckCount = 0; }
         prevPos = sc.scrollTop;
-
         if (sc.scrollTop <= 2 || stuckCount > 5) { done(); }
       }
 
       sc.scrollTop = sc.scrollHeight;
       var timer = setInterval(tick, 500);
-      setTimeout(function () { clearInterval(timer); done(); }, 61000);
+      setTimeout(function () { clearInterval(timer); done(); }, 46000);
     });
   }
 
@@ -181,32 +198,20 @@
     return new Promise(function (resolve) {
       var sessionId = getSessionId();
       var token = getAuthToken();
-      var info = [];
-
-      if (!sessionId) info.push('No sessionId');
-      else info.push('sessionId=' + sessionId);
-
-      if (!token) info.push('No token');
-      else info.push('token.length=' + token.length);
-
-      showStatus('Diagnostics:\n' + info.join('\n') + '\n\nTrying API...');
 
       if (sessionId && token) {
+        log('Strategy 1: API call');
         apiFetchMessages(sessionId, token).then(function (bizData) {
           var msgs = apiToMessages(bizData);
-          if (msgs && msgs.length > 0) {
-            showStatus('API success: ' + msgs.length + ' messages');
-            resolve({ messages: msgs, title: getChatTitle(bizData), source: 'api' });
-            return;
-          }
-          showStatus('API returned 0 messages, trying DOM...');
+          if (msgs && msgs.length > 0) { log('API SUCCESS: ' + msgs.length + ' msgs'); resolve({ messages: msgs, title: getChatTitle(bizData), source: 'api' }); return; }
+          log('API returned 0 messages, fallback');
           fallbackWithScroll(resolve);
         }).catch(function (err) {
-          showStatus('API failed: ' + err.message + '\nTrying DOM...');
+          log('API FAILED: ' + err.message);
           fallbackWithScroll(resolve);
         });
       } else {
-        showStatus(info.join('\n') + '\n\nTrying DOM...');
+        log('No sessionId or token, fallback');
         fallbackWithScroll(resolve);
       }
     });
@@ -214,20 +219,12 @@
 
   function fallbackWithScroll(resolve) {
     var fromDom = collectFromDOM();
-    if (fromDom.length > 4) {
-      showStatus('DOM: ' + fromDom.length + ' messages');
-      resolve({ messages: fromDom, title: getChatTitle(null), source: 'dom' });
-      return;
-    }
-    showStatus('DOM only ' + fromDom.length + ' msgs, scrolling for more...');
+    if (fromDom.length > 4) { log('DOM fallback: ' + fromDom.length + ' msgs'); resolve({ messages: fromDom, title: getChatTitle(null), source: 'dom' }); return; }
+    log('DOM only ' + fromDom.length + ' msgs, scrolling...');
     doScrollLoad().then(function (scrolled) {
-      if (scrolled.length > fromDom.length) {
-        resolve({ messages: scrolled, title: getChatTitle(null), source: 'dom+scroll' });
-      } else if (fromDom.length > 0) {
-        resolve({ messages: fromDom, title: getChatTitle(null), source: 'dom' });
-      } else {
-        resolve({ messages: [], title: getChatTitle(null), source: 'none' });
-      }
+      if (scrolled.length > fromDom.length) { resolve({ messages: scrolled, title: getChatTitle(null), source: 'dom+scroll' });
+      } else if (fromDom.length > 0) { resolve({ messages: fromDom, title: getChatTitle(null), source: 'dom' });
+      } else { resolve({ messages: [], title: getChatTitle(null), source: 'none' }); }
     });
   }
 
@@ -236,9 +233,7 @@
     var md = '# ' + result.title + '\nSource: ' + window.location.href + '\n\n';
     for (var i = 0; i < result.messages.length; i++) {
       var msg = result.messages[i];
-      if (msg.role === 'user') {
-        md += '## User\n\n' + msg.content + '\n\n---\n\n';
-      } else {
+      if (msg.role === 'user') { md += '## User\n\n' + msg.content + '\n\n---\n\n'; } else {
         md += '## Assistant\n\n';
         if (msg.thinkingText) md += '_' + msg.thinkingText + '_\n\n';
         if (msg.thinkingMd) md += '> ' + msg.thinkingMd.replace(/\n/g, '\n> ') + '\n\n';
@@ -256,10 +251,7 @@
       method: 'POST',
       headers: { Authorization: 'Bearer ' + OBSIDIAN_TOKEN, 'Content-Type': 'text/markdown' },
       body: md,
-    }).then(function (r) {
-      if (r.ok) return 'Saved to ' + path;
-      throw new Error();
-    }).catch(function () {
+    }).then(function (r) { if (r.ok) return 'Saved to ' + path; throw new Error('HTTP ' + r.status); }).catch(function () {
       try { navigator.clipboard.writeText(md); } catch (e) {}
       var a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
@@ -272,7 +264,7 @@
 
   function addButton() {
     if (document.getElementById('ds-export-btn')) return;
-    btn = document.createElement('div');
+    var btn = document.createElement('div');
     btn.id = 'ds-export-btn';
     btn.textContent = 'Export';
     Object.assign(btn.style, {
@@ -285,15 +277,17 @@
     btn.addEventListener('mouseenter', function () { btn.style.background = '#2851e0'; });
     btn.addEventListener('mouseleave', function () { btn.style.background = '#3964fe'; });
     btn.addEventListener('click', function () {
-      setBtnText('Working...');
+      btn.textContent = 'Working...';
+      log('=== Export started ===');
       getOrderedMessages().then(function (result) {
-        if (!result.messages || result.messages.length === 0) { setBtnText('Export'); alert('No messages found.'); return; }
+        if (!result.messages || result.messages.length === 0) { btn.textContent = 'Export'; log('FAIL: no messages'); alert('No messages found. Check debug panel (left side).'); return; }
         var md = generateMd(result);
         var count = result.messages.length;
-        setBtnText('Saving...');
+        btn.textContent = 'Saving...';
+        log('Export result: ' + count + ' msgs via ' + result.source);
         saveMd(md).then(function (msg) {
-          setBtnText('Export');
-          alert(msg + ' (' + count + ' msgs via ' + result.source + ')');
+          btn.textContent = 'Export';
+          alert(msg + ' (' + count + ' msgs via ' + result.source + ')\n\nDebug panel shows step-by-step details.');
         });
       });
     });
