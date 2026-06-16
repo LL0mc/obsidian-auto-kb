@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DeepSeek Chat Exporter (Adapted for KB)
 // @namespace    http://tampermonkey.net/
-// @version      2.2.0
+// @version      2.3.0
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
@@ -24,18 +24,37 @@
     answerMain: '.ds-markdown',
   };
 
+  // === UI helpers ===
+  var statusEl = null;
+  function showStatus(msg) {
+    if (!statusEl || !document.body.contains(statusEl)) {
+      statusEl = document.createElement('div');
+      statusEl.id = 'ds-export-status';
+      Object.assign(statusEl.style, {
+        position: 'fixed', left: '16px', bottom: '148px', zIndex: 999999,
+        padding: '6px 12px', background: '#222', color: '#0f0', border: 'none',
+        borderRadius: '4px', fontSize: '11px', fontFamily: 'monospace', lineHeight: '1.4',
+        display: 'none', whiteSpace: 'pre-wrap', maxWidth: '320px',
+      });
+      document.body.appendChild(statusEl);
+    }
+    statusEl.textContent = msg;
+    statusEl.style.display = 'block';
+  }
+
+  var btn = null;
+  function setBtnText(t) { if (btn) btn.textContent = t; }
+
+  // === Core ===
   function getAuthToken() {
     var raw = localStorage.getItem('userToken');
-    if (!raw) { console.debug('[DSexport] no userToken in localStorage'); return null; }
-    try { var v = JSON.parse(raw).value; console.debug('[DSexport] token found, length=' + v.length); return v; }
-    catch (e) { console.debug('[DSexport] token parse failed', e); return null; }
+    if (!raw) return null;
+    try { return JSON.parse(raw).value; } catch (e) { return null; }
   }
 
   function getSessionId() {
     var m = window.location.href.match(/\/s\/([^/?]+)/);
-    if (m) { console.debug('[DSexport] sessionId=' + m[1]); return m[1]; }
-    console.debug('[DSexport] no sessionId in URL: ' + window.location.href);
-    return null;
+    return m ? m[1] : null;
   }
 
   function getChatTitle(sessionData) {
@@ -48,19 +67,19 @@
 
   function apiFetchMessages(sessionId, token) {
     var url = API_HOST + '/api/v0/chat_history_messages?chat_session_id=' + encodeURIComponent(sessionId) + '&cache_version=0';
-    console.debug('[DSexport] fetching ' + url);
+    showStatus('Calling API...');
     return fetch(url, {
       headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' }
     }).then(function (r) {
-      console.debug('[DSexport] API response status=' + r.status);
+      showStatus('API status: ' + r.status);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     }).then(function (json) {
       if (json.code !== 0 || !json.data || json.data.biz_code !== 0) {
         throw new Error('API error: ' + (json.msg || (json.data && json.data.biz_msg) || 'unknown'));
       }
-      var count = (json.data.biz_data.chat_messages || []).length;
-      console.debug('[DSexport] API got ' + count + ' messages');
+      var msgs = json.data.biz_data.chat_messages || [];
+      showStatus('API OK: ' + msgs.length + ' messages');
       return json.data.biz_data;
     });
   }
@@ -68,15 +87,8 @@
   function apiToMessages(bizData) {
     if (!bizData || !Array.isArray(bizData.chat_messages) || bizData.chat_messages.length === 0) return null;
     return bizData.chat_messages.map(function (m) {
-      if (m.role === 'user') {
-        return { role: 'user', content: m.content || '' };
-      }
-      return {
-        role: 'assistant',
-        content: m.content || '',
-        thinkingMd: m.chain_of_thought || '',
-        thinkingText: '',
-      };
+      if (m.role === 'user') return { role: 'user', content: m.content || '' };
+      return { role: 'assistant', content: m.content || '', thinkingMd: m.chain_of_thought || '', thinkingText: '' };
     });
   }
 
@@ -109,24 +121,30 @@
         if (msg.content || msg.thinkingMd) msgs.push(msg);
       }
     }
-    console.debug('[DSexport] DOM collected ' + msgs.length + ' messages');
     return msgs;
   }
 
   function findScrollContainer() {
     var areas = document.querySelectorAll('.ds-scroll-area--enabled, .ds-scroll-area');
     for (var si = 0; si < areas.length; si++) { if (areas[si].scrollHeight > areas[si].clientHeight + 2) return areas[si]; }
+    var allDivs = document.querySelectorAll('div');
+    for (var di = 0; di < allDivs.length; di++) {
+      var d = allDivs[di];
+      if (d.scrollHeight > d.clientHeight + 2) {
+        var s = getComputedStyle(d);
+        if (s.overflowY === 'auto' || s.overflowY === 'scroll') return d;
+      }
+    }
     return null;
   }
 
   function doScrollLoad() {
     return new Promise(function (resolve) {
       var sc = findScrollContainer();
-      if (!sc) { console.debug('[DSexport] no scroll container found'); resolve([]); return; }
+      if (!sc) { showStatus('No scroll container found'); resolve([]); return; }
 
       var allMsgs = new Map();
       var savedPos = sc.scrollTop;
-      var maxDuration = 60000;
       var startedAt = Date.now();
       var prevPos = -1;
       var stuckCount = 0;
@@ -134,17 +152,15 @@
       function done() {
         sc.scrollTop = savedPos;
         var result = Array.from(allMsgs.values());
-        console.debug('[DSexport] scroll done, collected ' + result.length + ' unique messages');
+        showStatus('Scroll done: ' + result.length + ' unique msgs');
         resolve(result);
       }
 
       function tick() {
-        if (Date.now() - startedAt > maxDuration) { console.debug('[DSexport] scroll timeout'); done(); return; }
+        if (Date.now() - startedAt > 60000) { done(); return; }
 
         var fromDom = collectFromDOM();
-        fromDom.forEach(function (m) {
-          allMsgs.set(m.role + '::' + m.content.slice(0, 500), m);
-        });
+        fromDom.forEach(function (m) { allMsgs.set(m.role + '::' + m.content.slice(0, 500), m); });
 
         var cur = sc.scrollTop;
         sc.scrollTop = cur - Math.max(sc.clientHeight * 0.6, 100);
@@ -156,8 +172,8 @@
       }
 
       sc.scrollTop = sc.scrollHeight;
-      var timer = setInterval(tick, 400);
-      setTimeout(function () { clearInterval(timer); done(); }, maxDuration + 1000);
+      var timer = setInterval(tick, 500);
+      setTimeout(function () { clearInterval(timer); done(); }, 61000);
     });
   }
 
@@ -165,25 +181,32 @@
     return new Promise(function (resolve) {
       var sessionId = getSessionId();
       var token = getAuthToken();
+      var info = [];
+
+      if (!sessionId) info.push('No sessionId');
+      else info.push('sessionId=' + sessionId);
+
+      if (!token) info.push('No token');
+      else info.push('token.length=' + token.length);
+
+      showStatus('Diagnostics:\n' + info.join('\n') + '\n\nTrying API...');
 
       if (sessionId && token) {
-        console.debug('[DSexport] Strategy 1: API call');
         apiFetchMessages(sessionId, token).then(function (bizData) {
           var msgs = apiToMessages(bizData);
           if (msgs && msgs.length > 0) {
-            console.debug('[DSexport] API success: ' + msgs.length + ' messages');
+            showStatus('API success: ' + msgs.length + ' messages');
             resolve({ messages: msgs, title: getChatTitle(bizData), source: 'api' });
             return;
           }
-          console.debug('[DSexport] API returned empty messages, falling back');
+          showStatus('API returned 0 messages, trying DOM...');
           fallbackWithScroll(resolve);
         }).catch(function (err) {
-          console.debug('[DSexport] API failed: ' + err.message);
+          showStatus('API failed: ' + err.message + '\nTrying DOM...');
           fallbackWithScroll(resolve);
         });
       } else {
-        var reason = !sessionId ? 'no sessionId' : 'no token';
-        console.debug('[DSexport] ' + reason + ', falling back');
+        showStatus(info.join('\n') + '\n\nTrying DOM...');
         fallbackWithScroll(resolve);
       }
     });
@@ -192,10 +215,11 @@
   function fallbackWithScroll(resolve) {
     var fromDom = collectFromDOM();
     if (fromDom.length > 4) {
+      showStatus('DOM: ' + fromDom.length + ' messages');
       resolve({ messages: fromDom, title: getChatTitle(null), source: 'dom' });
       return;
     }
-    console.debug('[DSexport] DOM only has ' + fromDom.length + ' msgs, trying scroll');
+    showStatus('DOM only ' + fromDom.length + ' msgs, scrolling for more...');
     doScrollLoad().then(function (scrolled) {
       if (scrolled.length > fromDom.length) {
         resolve({ messages: scrolled, title: getChatTitle(null), source: 'dom+scroll' });
@@ -248,7 +272,7 @@
 
   function addButton() {
     if (document.getElementById('ds-export-btn')) return;
-    var btn = document.createElement('div');
+    btn = document.createElement('div');
     btn.id = 'ds-export-btn';
     btn.textContent = 'Export';
     Object.assign(btn.style, {
@@ -261,12 +285,16 @@
     btn.addEventListener('mouseenter', function () { btn.style.background = '#2851e0'; });
     btn.addEventListener('mouseleave', function () { btn.style.background = '#3964fe'; });
     btn.addEventListener('click', function () {
+      setBtnText('Working...');
       getOrderedMessages().then(function (result) {
-        if (!result.messages || result.messages.length === 0) { alert('No messages found.'); return; }
+        if (!result.messages || result.messages.length === 0) { setBtnText('Export'); alert('No messages found.'); return; }
         var md = generateMd(result);
         var count = result.messages.length;
-        if (!count) { alert('No messages found.'); return; }
-        saveMd(md).then(function (msg) { alert(msg + ' (' + count + ' msgs via ' + result.source + ')'); });
+        setBtnText('Saving...');
+        saveMd(md).then(function (msg) {
+          setBtnText('Export');
+          alert(msg + ' (' + count + ' msgs via ' + result.source + ')');
+        });
       });
     });
     document.body.appendChild(btn);
