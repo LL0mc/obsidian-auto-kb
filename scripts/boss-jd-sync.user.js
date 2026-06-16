@@ -125,6 +125,26 @@
         }
     }
 
+    /* Strategy 1b: extract company from JSON-LD (most accurate) */
+    function extractCompanyFromJsonLd() {
+        for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+            try {
+                const data = JSON.parse(s.textContent)
+                const item = data.hiringOrganization || (data['@graph'] && data['@graph'].find(g => g.hiringOrganization))
+                if (item) {
+                    const name = item.hiringOrganization?.name || item.name
+                    if (name) return name
+                }
+                // Some Boss pages nest it differently
+                if (data.name && data.description) {
+                    const org = data.hiringOrganization
+                    if (org && org.name) return org.name
+                }
+            } catch (_) { /* skip invalid JSON */ }
+        }
+        return ''
+    }
+
     /* Strategy 2: extract from visible page text + regex */
     function extractFromText() {
         const text = document.body.innerText || ''
@@ -135,13 +155,28 @@
         const h1 = document.querySelector('h1')
         if (h1 && h1.textContent.trim().length > 1) role = h1.textContent.trim()
 
-        // Company: look for patterns near salary
-        let company = ''
-        const coMatch = text.match(/([^\n]{2,30}(?:科技|技术|有限|股份|集团|工作室))\s*(?:正在热招|热招|招聘|[\d.]+[kK])/)
-        if (coMatch) company = coMatch[1].trim()
+        // Company: JSON-LD → DOM → regex
+        let company = extractCompanyFromJsonLd()
+        // 2. DOM selectors
         if (!company) {
-            const coMatch2 = text.match(/([^\n]{2,20}(?:科技|技术|有限|股份|集团|工作室|网络))/)
-            if (coMatch2) company = coMatch2[1].trim()
+            const coEl = document.querySelector('.job-detail-header [class*="company"] a, .job-detail-header [class*="name"], .company-info .company-name, .job-header .company')
+            if (coEl) company = coEl.textContent.trim()
+        }
+        // 3. Look for English brand names
+        if (!company) {
+            const brandMatch = text.match(/\b([A-Z][a-zA-Z0-9_]{2,20}(?:\s[A-Z][a-zA-Z0-9_]{2,20})?)\s*(?:正在热招|热招|招聘|[\d.]+[kK])/)
+            if (brandMatch) company = brandMatch[1].trim()
+        }
+        // 4. Chinese name near salary
+        if (!company) {
+            const cnMatch = text.match(/([^\n]{2,15}(?:科技|技术|有限|股份|集团|工作室))\s*(?:正在热招|热招|招聘|[\d.]+[kK])/)
+            if (cnMatch) company = cnMatch[1].trim()
+        }
+        // 5. General fallback: first non-slogan line
+        if (!company) {
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l.length >= 2 && l.length <= 20)
+            const coLine = lines.find(l => /[A-Za-z0-9_]/.test(l) && !/职责|要求|负责|任职|学历|经验|薪资|地址/.test(l))
+            if (coLine) company = coLine
         }
 
         // Salary
@@ -235,31 +270,24 @@
     }
 
     /* ====== SYNC ====== */
-    function pushToObsidian(md, fname) {
-        return new Promise((resolve) => {
-            const path = `${TARGET_DIR}/${fname}.md`
-            const token = GM_getValue('obsidian_token', OAPI_KEY)
-            GM_xmlhttpRequest({
+    async function pushToObsidian(md, fname) {
+        const path = `${TARGET_DIR}/${fname}.md`
+        const token = GM_getValue('obsidian_token', OAPI_KEY)
+        try {
+            const res = await fetch(`${OAPI}/vault/${encodeURI(path)}`, {
                 method: 'PUT',
-                url: `${OAPI}/vault/${encodeURI(path)}`,
                 headers: {
                     Authorization: `Bearer ${token}`,
                     'Content-Type': 'text/markdown'
                 },
-                data: md,
-                onload: (res) => {
-                    if (res.status >= 200 && res.status < 300) {
-                        resolve({ ok: true, path })
-                    } else {
-                        resolve({ ok: false, msg: `HTTP ${res.status}: ${(res.responseText || '').slice(0, 100)}` })
-                    }
-                },
-                onerror: (res) => {
-                    const info = res.statusText || res.responseText || ''
-                    resolve({ ok: false, msg: `连接失败 (status=${res.status}, ${info.slice(0,80)})` })
-                }
+                body: md
             })
-        })
+            if (res.ok) return { ok: true, path }
+            const text = await res.text().catch(() => '')
+            return { ok: false, msg: `HTTP ${res.status}: ${text.slice(0, 100)}` }
+        } catch (e) {
+            return { ok: false, msg: `连接失败: ${e.message}` }
+        }
     }
 
     function downloadFallback(md, fname) {

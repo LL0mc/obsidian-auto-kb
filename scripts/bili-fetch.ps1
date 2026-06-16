@@ -29,28 +29,114 @@ $raw = @{
     fetched_at = (Get-Date -Format o)
 }
 
-Write-Host "[2/4] Subtitle..." -ForegroundColor Cyan
-try {
-    $subResp = Invoke-BiliApi -Uri "https://api.bilibili.com/x/player/v2?aid=$($v.aid)&cid=$($v.cid)" -Cookie $cookie
-    $candidates = $subResp.data.subtitle.subtitles
-    Write-Host "  candidates: $($candidates.Count)" -ForegroundColor Gray
-    foreach ($t in $candidates) {
-        if ($t.subtitle_url) {
-            $subUrl = $t.subtitle_url -replace '^//', 'https://'
-            try {
-                $subJson = Invoke-BiliHttp -Uri $subUrl | ConvertFrom-Json
-                if ($subJson.body) {
-                    $raw.subtitle = @{
-                        segments = $subJson.body.Count; lang = $t.lan_doc
-                        list = $subJson.body | ForEach-Object { @{ from = $_.from; to = $_.to; text = $_.content } }
-                    }
-                    Write-Host "  + $($subJson.body.Count) segments ($($t.lan_doc))" -ForegroundColor Green
-                    break
-                }
-            } catch { Write-Host "  lang $($t.lan_doc): $($_.Exception.Message)" -ForegroundColor Gray }
-        }
+function Fetch-SubtitleViaV2 {
+    param($Aid, $Cid, $Cookie)
+    $resp = Invoke-BiliApi -Uri "https://api.bilibili.com/x/player/v2?aid=$Aid&cid=$Cid" -Cookie $Cookie
+    return @{ type = "raw"; data = $resp }
+}
+
+function Fetch-SubtitleViaWbiV2 {
+    param($Aid, $Cid, $Cookie)
+    $keys = Get-WbiKeys -Cookie $Cookie
+    if (-not $keys) { return $null }
+    # Fresh WBI keys each call to avoid staleness
+    $signed = Get-WbiSignedParams -Params @{aid=[string]$Aid; cid=[string]$Cid} -ImgKey $keys.img_key -SubKey $keys.sub_key
+    $qs = "aid=$Aid&cid=$Cid&wts=$($signed.wts)&w_rid=$($signed.w_rid)"
+    $resp = Invoke-BiliApi -Uri "https://api.bilibili.com/x/player/wbi/v2?$qs" -Cookie $Cookie
+    if ($resp.code -eq 0 -and $resp.data.subtitle.subtitles) {
+        return @{ type = "raw"; data = $resp }
     }
-} catch { Write-Host "  - Subtitle ($($_.Exception.Message))" -ForegroundColor Yellow }
+    return $null
+}
+
+function Load-PreviousSubtitle {
+    param([string]$OutPath)
+    if (-not (Test-Path -LiteralPath $OutPath)) { return $null }
+    $content = Get-Content -LiteralPath $OutPath -Raw -Encoding UTF8
+    $segments = if ($content -match 'subtitle_segments:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+    if ($segments -eq 0) { return $null }
+    # Extract subtitle list from existing file
+    $lines = $content -split "`r`n|`n"
+    $inSub = $false
+    $list = @()
+    foreach ($line in $lines) {
+        if ($line -match '^## 字幕') { $inSub = $true; continue }
+        if ($inSub -and $line -match '^\d+:\d{2} (.+)') {
+            $text = $Matches[1]
+            $tsParts = ($line -split ' ', 2)[0] -split ':'
+            $from = [int]$tsParts[0] * 60 + [int]$tsParts[1]
+            $list += @{ from = $from; to = $from + 3; text = $text }
+        }
+        if ($inSub -and $line -match '^## ') { break }
+    }
+    if ($list.Count -eq 0) { return $null }
+    return @{ segments = $list.Count; lang = "zh"; list = $list }
+}
+
+function Save-SubtitleFromResponse {
+    param($Response, [ref]$RawRef)
+    $data = $Response.data
+    $candidates = $data.data.subtitle.subtitles
+    foreach ($t in $candidates) {
+        if (-not $t.subtitle_url) { continue }
+        $subUrl = $t.subtitle_url -replace '^//', 'https://'
+        try {
+            $subJson = Invoke-BiliHttp -Uri $subUrl | ConvertFrom-Json
+            if ($subJson.body -and $subJson.body.Count -gt 0) {
+                $RawRef.Value.subtitle = @{
+                    segments = $subJson.body.Count; lang = $t.lan_doc
+                    list = $subJson.body | ForEach-Object { @{ from = $_.from; to = $_.to; text = $_.content } }
+                }
+                return $true
+            }
+        } catch { continue }
+    }
+    return $false
+}
+
+Write-Host "[2/4] Subtitle..." -ForegroundColor Cyan
+
+# Determine output path early for data preservation check
+$safeTitle = $v.title -replace '[<>:"/\\|?*]', '' -replace '\s+', ' '
+if ($safeTitle.Length -gt 50) { $safeTitle = $safeTitle.Substring(0, 50) }
+$safeTitle = $safeTitle.Trim()
+$fname = "$safeTitle`_$bvid"
+$outPath = "$VaultPath\kb\raw\bilibili\$fname.md"
+
+# Try live endpoints with retries
+$liveSucceeded = $false
+$endpoints = @(
+    @{ Name = "x/player/v2"; Fn = { Fetch-SubtitleViaV2 -Aid $v.aid -Cid $v.cid -Cookie $cookie } }
+    @{ Name = "x/player/wbi/v2"; Fn = { Fetch-SubtitleViaWbiV2 -Aid $v.aid -Cid $v.cid -Cookie $cookie } }
+)
+foreach ($ep in $endpoints) {
+    if ($liveSucceeded) { break }
+    for ($retry = 0; $retry -lt 3; $retry++) {
+        try {
+            $result = & $ep.Fn
+            if (-not $result) { if ($retry -eq 0) { Write-Host "  $($ep.Name): empty (retrying...)" -ForegroundColor Gray }; Start-Sleep -Milliseconds 500; continue }
+            if ($result.data.data.need_login_subtitle) {
+                Write-Host "  $($ep.Name): need_login_subtitle=True" -ForegroundColor Yellow
+            }
+            if (Save-SubtitleFromResponse -Response $result -RawRef ([ref]$raw)) {
+                Write-Host "  + $($raw.subtitle.segments) segments ($($raw.subtitle.lang)) via $($ep.Name)" -ForegroundColor Green
+                $liveSucceeded = $true; break
+            }
+        } catch { if ($retry -eq 2) { Write-Host "  $($ep.Name): $($_.Exception.Message)" -ForegroundColor Gray } }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+# If live failed, try loading from previous file
+if (-not $liveSucceeded) {
+    $oldSub = Load-PreviousSubtitle -OutPath $outPath
+    if ($oldSub) {
+        $raw.subtitle = $oldSub
+        Write-Host "  + $($oldSub.segments) segments (from previous file)" -ForegroundColor Cyan
+    } else {
+        Write-Host "  - no subtitle available" -ForegroundColor Yellow
+    }
+}
 
 Write-Host "[3/4] AI Summary..." -ForegroundColor Cyan
 try {
@@ -130,11 +216,6 @@ $lines += '---'
 $lines += "_抓取于 $($raw.fetched_at)_"
 
 $md = $lines -join "`r`n"
-$safeTitle = $v.title -replace '[<>:"/\\|?*]', '' -replace '\s+', ' '
-if ($safeTitle.Length -gt 50) { $safeTitle = $safeTitle.Substring(0, 50) }
-$safeTitle = $safeTitle.Trim()
-$fname = "$safeTitle`_$bvid"
-$outPath = "$VaultPath\kb\raw\bilibili\$fname.md"
 $null = New-Item -ItemType Directory -Path (Split-Path $outPath -Parent) -Force
 $md | Out-File -FilePath $outPath -Encoding UTF8
 Write-Host "`n=== Saved: $fname.md ===" -ForegroundColor Green
