@@ -45,6 +45,18 @@
     debugEl.scrollTop = debugEl.scrollHeight;
   }
 
+  // === Passive fetch logger (discovers API URLs the page calls) ===
+  (function () {
+    var orig = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (url.indexOf('/api/') !== -1 && url.indexOf('chat_history') !== -1) {
+        log('[INTERCEPT] page called: ' + url.slice(0, 200));
+      }
+      return orig(input, init);
+    };
+  })();
+
   // === Core ===
   function getAuthToken() {
     log('localStorage keys: ' + Object.keys(localStorage).join(', '));
@@ -80,25 +92,89 @@
     return m ? 'DeepSeek Chat (' + m[1].slice(0, 8) + ')' : 'DeepSeek Chat';
   }
 
-  function apiFetchMessages(sessionId, token) {
-    var url = API_HOST + '/api/v0/chat_history_messages?chat_session_id=' + encodeURIComponent(sessionId) + '&cache_version=0';
-    log('API URL: ' + url);
-    log('token[:10]: ' + token.slice(0, 10) + '...');
+  function tryAPIs(sessionId, token, altToken, urls, idx) {
+    if (idx >= urls.length) return Promise.reject(new Error('All endpoints failed'));
+    var url = urls[idx];
+    log('Trying [' + idx + ']: ' + url);
+    // Try with both tokens
+    var bearer = altToken && idx >= 3 ? altToken : token;
     return fetch(url, {
-      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' }
-    }).then(function (r) {
-      log('API status: ' + r.status + ' ' + r.statusText);
-      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
-      return r.json();
-    }).then(function (json) {
-      log('API code: ' + json.code + ', biz_code: ' + (json.data ? json.data.biz_code : 'no data'));
-      if (json.code !== 0 || !json.data || json.data.biz_code !== 0) {
-        throw new Error(json.msg || (json.data && json.data.biz_msg) || 'unknown API error');
+      credentials: 'include',
+      headers: {
+        'Authorization': 'Bearer ' + bearer,
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
       }
-      var count = (json.data.biz_data.chat_messages || []).length;
-      log('API messages count: ' + count);
-      return json.data.biz_data;
+    }).then(function (r) {
+      log('Status ' + idx + ': ' + r.status + ' ' + r.statusText);
+      // Show response headers
+      var ct = r.headers.get('content-type') || 'none';
+      log('Content-Type[' + idx + ']: ' + ct);
+      return r.text().then(function (body) {
+        var preview = body.slice(0, 300).replace(/\n/g, ' ').trim();
+        log('Body[' + idx + '] preview: ' + preview);
+        if (/^\s*</.test(body)) throw new Error('HTML response (not JSON)');
+        try {
+          var json = JSON.parse(body);
+          if (json.data && json.data.biz_data && json.data.biz_data.chat_messages) {
+            var count = json.data.biz_data.chat_messages.length;
+            log('SUCCESS: ' + count + ' messages');
+            return json.data.biz_data;
+          }
+          if (json.data && json.data.chat_messages) {
+            var count2 = json.data.chat_messages.length;
+            log('SUCCESS (alt format): ' + count2 + ' messages');
+            return json.data;
+          }
+          if (Array.isArray(json.chat_messages)) {
+            log('SUCCESS (flat): ' + json.chat_messages.length + ' msgs, trying alt');
+            return json;
+          }
+          throw new Error('Unexpected JSON structure, keys: ' + Object.keys(json).join(','));
+        } catch (e) {
+          if (e.message === 'HTML response (not JSON)') throw e;
+          throw new Error('JSON error: ' + e.message);
+        }
+      });
+    }).catch(function (err) {
+      log('Endpoint [' + idx + '] failed: ' + err.message);
+      return tryAPIs(sessionId, token, altToken, urls, idx + 1);
     });
+  }
+
+  function apiFetchMessages(sessionId, token) {
+    // Check for alternative auth tokens
+    var altToken = null;
+    try { var sj = localStorage.getItem('settingsJwt'); if (sj) { log('settingsJwt[:40]: ' + sj.slice(0, 40)); altToken = sj; } } catch (e) {}
+    try { var st = localStorage.getItem('sessionToken'); if (st) log('sessionToken[:40]: ' + st.slice(0, 40)); } catch (e) {}
+    try { var at = localStorage.getItem('authToken'); if (at) log('authToken[:40]: ' + at.slice(0, 40)); } catch (e) {}
+
+    var sid = encodeURIComponent(sessionId);
+    var endpoints = [
+      API_HOST + '/api/v0/chat_history_messages?chat_session_id=' + sid + '&cache_version=0',
+      API_HOST + '/api/v0/chat_history_messages?chat_session_id=' + sid,
+      API_HOST + '/api/v0/chat/history_messages?chat_session_id=' + sid,
+      API_HOST + '/api/chat_session/history?chat_session_id=' + sid,
+      API_HOST + '/api/chat/history?chat_session_id=' + sid,
+      API_HOST + '/api/conversation/history?session_id=' + sid,
+      API_HOST + '/api/v0/chat_session/fetch_page?lte_cursor.pinned=false&limit=1',
+    ];
+    return tryAPIs(sessionId, token, altToken, endpoints, 0);
+  }
+
+  function apiFetchMessages(sessionId, token) {
+    // Also log alternative tokens for debugging
+    try { var sj = localStorage.getItem('settingsJwt'); if (sj) log('settingsJwt[:30]: ' + sj.slice(0, 30)); } catch (e) {}
+    try { var st = localStorage.getItem('sessionToken'); if (st) log('sessionToken[:30]: ' + st.slice(0, 30)); } catch (e) {}
+
+    var endpoints = [
+      API_HOST + '/api/v0/chat_history_messages?chat_session_id=' + encodeURIComponent(sessionId) + '&cache_version=0',
+      API_HOST + '/api/v0/chat_history_messages?chat_session_id=' + encodeURIComponent(sessionId),
+      API_HOST + '/api/v1/chat_history_messages?chat_session_id=' + encodeURIComponent(sessionId),
+      API_HOST + '/api/chat/history?chat_session_id=' + encodeURIComponent(sessionId),
+      API_HOST + '/api/chat_session/history?chat_session_id=' + encodeURIComponent(sessionId),
+    ];
+    return tryAPIs(sessionId, token, endpoints, 0);
   }
 
   function apiToMessages(bizData) {
