@@ -4,7 +4,7 @@ Uses Playwright to open the conversation page in a real browser,
 scans all messages, and saves as structured Markdown.
 """
 
-import sys, re, time, json, os, argparse
+import sys, re, time, os, argparse
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -12,6 +12,7 @@ OBSIDIAN_VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", r"D:\notebooks\Lmc\b
 OUTPUT_DIR = "kb/raw/deepseek"
 
 SEL = {
+    "chatContainer": ".ds-virtual-list-visible-items",
     "userMsg": "._9663006",
     "userContent": ".fbb737a4",
     "aiMsg": "._4f9bf79",
@@ -22,14 +23,15 @@ SEL = {
     "scrollArea": ".ds-scroll-area--enabled, .ds-scroll-area",
 }
 
+
 def html_to_md(html):
     if not html:
         return ""
     md = html
     md = re.sub(r'<pre><code>([\s\S]*?)</code></pre>', lambda m: '\n```\n' + unescape(m.group(1)) + '\n```\n', md)
     for i in range(1, 5):
-        prefix = "#" * i
-        md = re.sub(rf'<h{i}[^>]*>', f'\n{prefix} ', md, flags=re.I)
+        p = "#" * i
+        md = re.sub(rf'<h{i}[^>]*>', f'\n{p} ', md, flags=re.I)
         md = re.sub(rf'</h{i}>', '\n', md, flags=re.I)
     md = re.sub(r'<strong>([\s\S]*?)</strong>', r'**\1**', md, flags=re.I)
     md = re.sub(r'<b>([\s\S]*?)</b>', r'**\1**', md, flags=re.I)
@@ -64,9 +66,8 @@ def html_to_md(html):
 
 
 def unescape(s):
-    s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-    s = s.replace("&quot;", '"').replace("&#39;", "'").replace("&#x27;", "'")
-    s = s.replace("&#x2F;", "/")
+    for (a, b) in [("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&"), ("&quot;", '"'), ("&#39;", "'"), ("&#x27;", "'"), ("&#x2F;", "/")]:
+        s = s.replace(a, b)
     return s
 
 
@@ -76,24 +77,25 @@ def clean_text(el):
 
 def extract_messages(page):
     messages = []
-    container = page.query_selector(".ds-virtual-list-visible-items")
+    container = page.query_selector(SEL["chatContainer"])
     if not container:
         print("[!] Chat container not found")
         return messages
 
     children = container.query_selector_all(":scope > *")
+    user_count = 0
+    ai_count = 0
+
     for child in children:
         class_name = child.get_attribute("class") or ""
 
-        # User message
-        if "_9663006" in class_name:
+        if SEL["userMsg"].lstrip(".") in class_name:
             text_el = child.query_selector(SEL["userContent"])
             if text_el and text_el.text_content().strip():
                 messages.append({"role": "user", "content": text_el.text_content().strip()})
-            continue
+                user_count += 1
 
-        # AI message
-        if "_4f9bf79" in class_name:
+        elif SEL["aiMsg"].lstrip(".") in class_name:
             msg = {"role": "assistant", "content": "", "thinkingText": "", "thinkingMd": ""}
 
             te = child.query_selector(SEL["thinkTime"])
@@ -104,35 +106,33 @@ def extract_messages(page):
             if tke:
                 msg["thinkingMd"] = html_to_md(tke.inner_html())
 
-            # Try primary answer wrapper
             ae = child.query_selector(SEL["answerWrapper"])
             if ae:
                 msg["content"] = html_to_md(ae.inner_html())
             else:
-                # Fallback: first .ds-markdown NOT inside thinking chain
                 all_md = child.query_selector_all(SEL["answerFallback"])
                 for md_el in all_md:
-                    # Check if this is inside thinking chain
-                    parent_chain = md_el.evaluate("el => el.closest('.e1675d8b') !== null")
-                    if not parent_chain:
+                    in_think = md_el.evaluate("el => !!el.closest('.e1675d8b')")
+                    if not in_think:
                         msg["content"] = html_to_md(md_el.inner_html())
                         break
 
             if msg["content"] or msg["thinkingMd"]:
                 messages.append(msg)
+                ai_count += 1
 
+    print(f"  Extracted: {user_count} user + {ai_count} AI = {len(messages)} total")
     return messages
 
 
-def scroll_to_load_all(page, timeout=60):
-    """Scroll the virtual list to trigger loading of all items."""
+def scroll_to_load_all(page, timeout=30):
     scroll_el = page.query_selector(SEL["scrollArea"])
     if not scroll_el:
-        visible = page.query_selector(".ds-virtual-list-visible-items")
+        visible = page.query_selector(SEL["chatContainer"])
         if visible:
             scroll_el = visible.evaluate_handle("el => el.parentElement").as_element()
     if not scroll_el:
-        print("[!] No scroll container found")
+        print("  No scroll container found")
         return
 
     prev_count = 0
@@ -140,31 +140,23 @@ def scroll_to_load_all(page, timeout=60):
     start = time.time()
 
     while time.time() - start < timeout:
-        children = page.query_selector_all(".ds-virtual-list-visible-items > *")
+        children = page.query_selector_all(SEL["chatContainer"] + " > *")
         count = len(children)
         if count > prev_count:
             print(f"  Messages in DOM: {count}")
 
-        # Scroll to top to trigger loading of earlier items
-        scroll_el.evaluate("el => el.scrollTop = 0")
-        page.wait_for_timeout(1000)
-
-        # Scroll down to load later items
-        scroll_el.evaluate("el => el.scrollTop = el.scrollHeight")
-        page.wait_for_timeout(1000)
+        scroll_el.evaluate("el => { el.scrollTop = 0; }")
+        page.wait_for_timeout(800)
+        scroll_el.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+        page.wait_for_timeout(800)
 
         if count == prev_count and count > 0:
             stuck += 1
-            if stuck > 5:
+            if stuck > 4:
                 break
         else:
             stuck = 0
             prev_count = count
-
-        if count > 40:
-            break
-
-    print(f"  Final DOM count: {len(page.query_selector_all('.ds-virtual-list-visible-items > *'))}")
 
 
 def generate_markdown(messages, title, url):
@@ -178,12 +170,12 @@ def generate_markdown(messages, title, url):
                 md += f"_{msg['thinkingText']}_\n\n"
             if msg["thinkingMd"]:
                 md += "> " + msg["thinkingMd"].replace("\n", "\n> ") + "\n\n"
-            md += f"{msg['content']}\n\n---\n\n"
+            content = msg["content"] or ""
+            md += content + "\n\n---\n\n"
     return md
 
 
 def find_chrome_profile():
-    """Find Chrome or Edge user profile for login persistence."""
     candidates = [
         (r"C:\Users\LMC\AppData\Local\Google\Chrome\User Data\Default", True),
         (r"C:\Users\LMC\AppData\Local\Microsoft\Edge\User Data\Default", False),
@@ -199,96 +191,103 @@ def main():
     parser = argparse.ArgumentParser(description="Export DeepSeek conversation to Markdown")
     parser.add_argument("url", nargs="?", help="DeepSeek conversation URL")
     parser.add_argument("--output", help="Output file path (default: auto)")
-    parser.add_argument("--no-browser", action="store_true", help="Don't open browser, use saved HTML")
     args = parser.parse_args()
 
-    # Ask for URL if not provided
     url = args.url
     if not url:
-        url = input("DeepSeek conversation URL: ").strip()
+        url = input("DeepSeek URL: ").strip()
         if not url:
             print("No URL provided")
             sys.exit(1)
 
-    # Extract title from URL
-    m = re.search(r"/s/([a-z0-9-]+)", url)
+    is_share = "/share/" in url
+    m = re.search(r"/(?:s|share)/([a-z0-9-]+)", url)
     session_id = m.group(1) if m else "unknown"
     title = f"DeepSeek Chat ({session_id[:8]})"
 
     print(f"Opening: {url}")
-    print(f"Session: {session_id}")
+    print(f"Type: {'share (public)' if is_share else 'private session'}")
+
+    context = None
+    browser = None
 
     with sync_playwright() as p:
-        profile_path, channel = find_chrome_profile()
-        browser = None
-        context = None
-
-        if profile_path:
-            print(f"Using Chrome profile: {profile_path}")
-            try:
-                launch_args = {
-                    "user_data_dir": profile_path,
-                    "headless": False,
-                    "args": ["--no-sandbox"],
-                }
-                if is_chrome:
-                    launch_args["channel"] = "chrome"
-                context = p.chromium.launch_persistent_context(**launch_args)
-                page = context.pages[0] if context.pages else context.new_page()
-            except Exception as e:
-                print(f"[!] Profile launch failed: {e}")
-                print("[!] Chrome may be running. Close it or try a different profile.")
-                browser = p.chromium.launch(headless=False)
-                page = browser.new_page()
-        else:
-            print("[!] No Chrome profile found, launching fresh browser")
-            print("[!] You may need to log in manually")
+        if is_share:
             browser = p.chromium.launch(headless=False)
             page = browser.new_page()
+        else:
+            profile_path, is_chrome_profile = find_chrome_profile()
+            if profile_path:
+                print(f"Using Chrome profile: {profile_path}")
+                try:
+                    launch_args = {
+                        "user_data_dir": profile_path,
+                        "headless": False,
+                        "args": ["--no-sandbox"],
+                    }
+                    if is_chrome_profile:
+                        launch_args["channel"] = "chrome"
+                    context = p.chromium.launch_persistent_context(**launch_args)
+                    page = context.pages[0] if context.pages else context.new_page()
+                except Exception as e:
+                    print(f"  Profile launch failed: {e}")
+                    browser = p.chromium.launch(headless=False)
+                    page = browser.new_page()
+            else:
+                print("No Chrome profile found, launching fresh browser")
+                browser = p.chromium.launch(headless=False)
+                page = browser.new_page()
 
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
 
-        # Check if logged in
-        if "/sign_in" in page.url:
+        if not is_share and "/sign_in" in page.url:
             print("[!] Not logged in. Log in manually in the browser window (60s timeout)...")
             try:
-                page.wait_for_url("**/a/chat/**", timeout=60000)
-                page.wait_for_selector(".ds-virtual-list-visible-items", timeout=30000)
+                page.wait_for_url("**/chat/**", timeout=60000)
+                page.wait_for_selector(SEL["chatContainer"], timeout=30000)
             except:
-                print("[!] Timeout waiting for chat to load.")
+                print("[!] Timeout waiting for chat.")
                 if context:
                     context.close()
-                else:
+                if browser:
                     browser.close()
                 sys.exit(1)
-        else:
-            try:
-                page.wait_for_selector(".ds-virtual-list-visible-items", timeout=15000)
-            except:
-                print("[!] Chat container not found, but may still load...")
-                page.wait_for_timeout(3000)
 
-        print("[+] Page loaded, scrolling to load all messages...")
-        scroll_to_load_all(page)
+        try:
+            page.wait_for_selector(f"{SEL['userMsg']}, {SEL['aiMsg']}", timeout=20000)
+            print("[+] Chat messages rendered")
+        except:
+            print("[!] Messages not found on page")
+            page.wait_for_timeout(5000)
+
+        # Check current DOM count
+        initial = len(page.query_selector_all(SEL["chatContainer"] + " > *"))
+        print(f"  Initial DOM items: {initial}")
+
+        if initial < 8:
+            print("[+] Scrolling to load more...")
+            scroll_to_load_all(page)
+        else:
+            print("[+] All messages appear loaded, skipping scroll")
 
         print("[+] Extracting messages...")
         messages = extract_messages(page)
 
         if context:
             context.close()
-        else:
+        elif browser:
             browser.close()
 
     if not messages:
         print("[!] No messages extracted")
         sys.exit(1)
 
-    print(f"[+] Extracted {len(messages)} messages")
+    print(f"[+] Total: {len(messages)} messages")
 
     md = generate_markdown(messages, title, url)
 
-    # Save
+    # Save locally only (avoid duplication via API)
     ts = time.strftime("%Y-%m-%dT%H-%M-%S")
     fname = f"deepseek_{ts}.md"
     out_path = OBSIDIAN_VAULT / OUTPUT_DIR / fname
@@ -296,11 +295,13 @@ def main():
     out_path.write_text(md, encoding="utf-8")
     print(f"[+] Saved: {out_path}")
 
-    # Also try Obsidian REST API
+    # Also try Obsidian REST API with PUT (overwrite, not append)
     try:
         import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         OBSIDIAN_TOKEN = "YOUR_OBSIDIAN_TOKEN_HERE"
-        r = requests.post(
+        r = requests.put(
             f"https://127.0.0.1:27124/vault/{OUTPUT_DIR}/{fname}",
             headers={"Authorization": f"Bearer {OBSIDIAN_TOKEN}", "Content-Type": "text/markdown"},
             data=md.encode("utf-8"),
@@ -308,10 +309,9 @@ def main():
             timeout=10,
         )
         if r.ok:
-            print(f"[+] Sent to Obsidian API: {OUTPUT_DIR}/{fname}")
+            print(f"[+] Sent to Obsidian API")
     except Exception as e:
         print(f"[!] Obsidian API unavailable: {e}")
-        print(f"[+] File saved locally at: {out_path}")
 
 
 if __name__ == "__main__":
