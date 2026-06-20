@@ -1,162 +1,86 @@
 """
 DeepSeek conversation exporter.
-Uses Playwright to open the conversation page in a real browser,
-scans all messages, and saves as structured Markdown.
+Uses Playwright to intercept API responses and extract ALL messages,
+bypassing DOM virtual-list limitations.
 """
 
-import sys, re, time, os, argparse
+import sys, re, time, os, json, argparse
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 OBSIDIAN_VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", r"D:\notebooks\Lmc\brew"))
 OUTPUT_DIR = "kb/raw/deepseek"
 
-SEL = {
-    "chatContainer": ".ds-virtual-list-visible-items",
-    "userMsg": "._9663006",
-    "userContent": ".fbb737a4",
-    "aiMsg": "._4f9bf79",
-    "thinkTime": "._5255ff8._4d41763",
-    "thinkChain": ".e1675d8b",
-    "answerWrapper": ".ds-assistant-message-main-content",
-    "answerFallback": ".ds-markdown",
-    "scrollArea": ".ds-scroll-area--enabled, .ds-scroll-area",
-}
+API_PATTERNS = [
+    "/api/v0/share/content",
+    "/api/v0/chat/",
+    "/api/v1/chat/",
+    "/api/conversation",
+    "/api/session",
+]
 
 
-def html_to_md(html):
-    if not html:
-        return ""
-    md = html
-    md = re.sub(r'<pre><code>([\s\S]*?)</code></pre>', lambda m: '\n```\n' + unescape(m.group(1)) + '\n```\n', md)
-    for i in range(1, 5):
-        p = "#" * i
-        md = re.sub(rf'<h{i}[^>]*>', f'\n{p} ', md, flags=re.I)
-        md = re.sub(rf'</h{i}>', '\n', md, flags=re.I)
-    md = re.sub(r'<strong>([\s\S]*?)</strong>', r'**\1**', md, flags=re.I)
-    md = re.sub(r'<b>([\s\S]*?)</b>', r'**\1**', md, flags=re.I)
-    md = re.sub(r'<em>([\s\S]*?)</em>', r'*\1*', md, flags=re.I)
-    md = re.sub(r'<i>([\s\S]*?)</i>', r'*\1*', md, flags=re.I)
-    md = re.sub(r'<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)</a>', r'[\2](\1)', md, flags=re.I)
-    md = re.sub(r'<hr\s*/?>', '\n---\n', md)
-    oi = [0]
-
-    def ol_start(m):
-        oi[0] = 1
-        return "\n"
-
-    def li_start(m):
-        if oi[0] > 0:
-            oi[0] += 1
-            return f'\n{oi[0] - 1}. '
-        return "\n- "
-    md = re.sub(r'<ol[^>]*>', ol_start, md)
-    md = re.sub(r'</ol>', '\n', md)
-    md = re.sub(r'<li[^>]*>', li_start, md)
-    md = re.sub(r'</li>', '', md)
-    md = re.sub(r'<p[^>]*>', '\n', md)
-    md = re.sub(r'</p>', '\n', md)
-    md = re.sub(r'<br\s*/?>', '\n', md)
-    md = re.sub(r'<code>([\s\S]*?)</code>', r'`\1`', md)
-    md = re.sub(r'<[^>]+>', '', md)
-    md = unescape(md)
-    md = re.sub(r'\n{4,}', '\n\n\n', md)
-    md = re.sub(r'[ \t]+$', '', md, flags=re.M)
-    return md.strip()
-
-
-def unescape(s):
-    for (a, b) in [("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&"), ("&quot;", '"'), ("&#39;", "'"), ("&#x27;", "'"), ("&#x2F;", "/")]:
-        s = s.replace(a, b)
-    return s
-
-
-def clean_text(el):
-    return el.text_content().replace("\xa0", " ").strip() if el else ""
-
-
-def extract_messages(page):
+def extract_messages_from_api(data):
+    """Extract messages from DeepSeek API response structure."""
     messages = []
-    container = page.query_selector(SEL["chatContainer"])
-    if not container:
-        print("[!] Chat container not found")
-        return messages
 
-    children = container.query_selector_all(":scope > *")
-    user_count = 0
-    ai_count = 0
+    # Navigate: data -> data -> biz_data -> messages
+    biz_data = None
+    try:
+        biz_data = data["data"]["data"]["biz_data"]
+    except (KeyError, TypeError):
+        try:
+            biz_data = data["data"]["biz_data"]
+        except (KeyError, TypeError):
+            try:
+                biz_data = data["biz_data"]
+            except (KeyError, TypeError):
+                return messages
 
-    for child in children:
-        class_name = child.get_attribute("class") or ""
+    raw_msgs = biz_data.get("messages", []) if isinstance(biz_data, dict) else []
 
-        if SEL["userMsg"].lstrip(".") in class_name:
-            text_el = child.query_selector(SEL["userContent"])
-            if text_el and text_el.text_content().strip():
-                messages.append({"role": "user", "content": text_el.text_content().strip()})
-                user_count += 1
+    for m in raw_msgs:
+        role = m.get("role", "").upper()
+        fragments = m.get("fragments", [])
 
-        elif SEL["aiMsg"].lstrip(".") in class_name:
-            msg = {"role": "assistant", "content": "", "thinkingText": "", "thinkingMd": ""}
+        user_content = ""
+        ai_content = ""
+        thinking_parts = []
+        tool_calls = []
 
-            te = child.query_selector(SEL["thinkTime"])
-            if te:
-                msg["thinkingText"] = clean_text(te)
+        for frag in fragments:
+            ftype = frag.get("type", "")
+            content = frag.get("content") or ""
 
-            tke = child.query_selector(SEL["thinkChain"])
-            if tke:
-                msg["thinkingMd"] = html_to_md(tke.inner_html())
+            if ftype == "REQUEST":
+                user_content = content
+            elif ftype == "RESPONSE":
+                ai_content = content
+            elif ftype == "THINK":
+                if content:
+                    thinking_parts.append(content)
+            elif ftype in ("TOOL_SEARCH", "TOOL_OPEN"):
+                queries = frag.get("queries", [])
+                if queries:
+                    tool_calls.append({"type": ftype, "queries": queries})
 
-            ae = child.query_selector(SEL["answerWrapper"])
-            if ae:
-                msg["content"] = html_to_md(ae.inner_html())
-            else:
-                all_md = child.query_selector_all(SEL["answerFallback"])
-                for md_el in all_md:
-                    in_think = md_el.evaluate("el => !!el.closest('.e1675d8b')")
-                    if not in_think:
-                        msg["content"] = html_to_md(md_el.inner_html())
-                        break
+        if role == "USER" and user_content:
+            messages.append({
+                "role": "user",
+                "message_id": m.get("message_id"),
+                "content": user_content,
+            })
+        elif role == "ASSISTANT":
+            thinking_md = "\n\n".join(thinking_parts) if thinking_parts else ""
+            messages.append({
+                "role": "assistant",
+                "message_id": m.get("message_id"),
+                "content": ai_content,
+                "thinkingMd": thinking_md,
+                "toolCalls": tool_calls,
+            })
 
-            if msg["content"] or msg["thinkingMd"]:
-                messages.append(msg)
-                ai_count += 1
-
-    print(f"  Extracted: {user_count} user + {ai_count} AI = {len(messages)} total")
     return messages
-
-
-def scroll_to_load_all(page, timeout=30):
-    scroll_el = page.query_selector(SEL["scrollArea"])
-    if not scroll_el:
-        visible = page.query_selector(SEL["chatContainer"])
-        if visible:
-            scroll_el = visible.evaluate_handle("el => el.parentElement").as_element()
-    if not scroll_el:
-        print("  No scroll container found")
-        return
-
-    prev_count = 0
-    stuck = 0
-    start = time.time()
-
-    while time.time() - start < timeout:
-        children = page.query_selector_all(SEL["chatContainer"] + " > *")
-        count = len(children)
-        if count > prev_count:
-            print(f"  Messages in DOM: {count}")
-
-        scroll_el.evaluate("el => { el.scrollTop = 0; }")
-        page.wait_for_timeout(800)
-        scroll_el.evaluate("el => { el.scrollTop = el.scrollHeight; }")
-        page.wait_for_timeout(800)
-
-        if count == prev_count and count > 0:
-            stuck += 1
-            if stuck > 4:
-                break
-        else:
-            stuck = 0
-            prev_count = count
 
 
 def generate_markdown(messages, title, url):
@@ -166,12 +90,9 @@ def generate_markdown(messages, title, url):
             md += f"## User\n\n{msg['content']}\n\n---\n\n"
         else:
             md += "## Assistant\n\n"
-            if msg["thinkingText"]:
-                md += f"_{msg['thinkingText']}_\n\n"
-            if msg["thinkingMd"]:
+            if msg.get("thinkingMd"):
                 md += "> " + msg["thinkingMd"].replace("\n", "\n> ") + "\n\n"
-            content = msg["content"] or ""
-            md += content + "\n\n---\n\n"
+            md += msg["content"] + "\n\n---\n\n"
     return md
 
 
@@ -210,6 +131,7 @@ def main():
 
     context = None
     browser = None
+    api_messages = []
 
     with sync_playwright() as p:
         if is_share:
@@ -238,14 +160,29 @@ def main():
                 browser = p.chromium.launch(headless=False)
                 page = browser.new_page()
 
+        # Intercept API responses
+        def on_response(response):
+            resp_url = response.url
+            if any(pat in resp_url for pat in API_PATTERNS):
+                try:
+                    body = response.json()
+                    msgs = extract_messages_from_api(body)
+                    if msgs:
+                        api_messages.extend(msgs)
+                        print(f"  [API] {resp_url.split('?')[0].split('/')[-1]}: {len(msgs)} messages")
+                except Exception:
+                    pass
+
+        page.on("response", on_response)
+
         page.goto(url, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(5000)
 
         if not is_share and "/sign_in" in page.url:
             print("[!] Not logged in. Log in manually in the browser window (60s timeout)...")
             try:
                 page.wait_for_url("**/chat/**", timeout=60000)
-                page.wait_for_selector(SEL["chatContainer"], timeout=30000)
+                page.wait_for_timeout(5000)
             except:
                 print("[!] Timeout waiting for chat.")
                 if context:
@@ -254,40 +191,46 @@ def main():
                     browser.close()
                 sys.exit(1)
 
-        try:
-            page.wait_for_selector(f"{SEL['userMsg']}, {SEL['aiMsg']}", timeout=20000)
-            print("[+] Chat messages rendered")
-        except:
-            print("[!] Messages not found on page")
-            page.wait_for_timeout(5000)
-
-        # Check current DOM count
-        initial = len(page.query_selector_all(SEL["chatContainer"] + " > *"))
-        print(f"  Initial DOM items: {initial}")
-
-        if initial < 8:
-            print("[+] Scrolling to load more...")
-            scroll_to_load_all(page)
-        else:
-            print("[+] All messages appear loaded, skipping scroll")
-
-        print("[+] Extracting messages...")
-        messages = extract_messages(page)
+        # For non-share pages, scroll up to trigger loading earlier messages
+        if not is_share:
+            scroll_el = page.query_selector(".ds-scroll-area--enabled, .ds-scroll-area")
+            if scroll_el:
+                print("[+] Scrolling to load full history...")
+                for _ in range(10):
+                    prev_count = len(api_messages)
+                    scroll_el.evaluate("el => { el.scrollTop = 0; }")
+                    page.wait_for_timeout(2000)
+                    if len(api_messages) == prev_count:
+                        break
+                    print(f"    Messages so far: {len(api_messages)}")
 
         if context:
             context.close()
         elif browser:
             browser.close()
 
-    if not messages:
-        print("[!] No messages extracted")
+    # Deduplicate by message_id
+    seen = set()
+    unique_msgs = []
+    for msg in api_messages:
+        mid = msg.get("message_id")
+        key = mid if mid else (msg["role"], msg["content"][:100])
+        if key not in seen:
+            seen.add(key)
+            unique_msgs.append(msg)
+
+    # Sort by message_id
+    unique_msgs.sort(key=lambda m: m.get("message_id") or 0)
+
+    if not unique_msgs:
+        print("[!] No messages extracted from API")
         sys.exit(1)
 
-    print(f"[+] Total: {len(messages)} messages")
+    print(f"[+] Total: {len(unique_msgs)} unique messages")
 
-    md = generate_markdown(messages, title, url)
+    md = generate_markdown(unique_msgs, title, url)
 
-    # Save locally only (avoid duplication via API)
+    # Save locally
     ts = time.strftime("%Y-%m-%dT%H-%M-%S")
     fname = f"deepseek_{ts}.md"
     out_path = OBSIDIAN_VAULT / OUTPUT_DIR / fname
@@ -295,7 +238,7 @@ def main():
     out_path.write_text(md, encoding="utf-8")
     print(f"[+] Saved: {out_path}")
 
-    # Also try Obsidian REST API with PUT (overwrite, not append)
+    # Also try Obsidian REST API
     try:
         import requests
         import urllib3
