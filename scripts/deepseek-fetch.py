@@ -177,14 +177,14 @@ def generate_markdown(messages, title, url):
 
 def find_chrome_profile():
     candidates = [
-        (r"C:\Users\LMC\AppData\Local\Google\Chrome\User Data\Default", True),
-        (r"C:\Users\LMC\AppData\Local\Microsoft\Edge\User Data\Default", False),
-        (r"C:\Users\LMC\AppData\Local\Google\Chrome\User Data\Profile 1", True),
+        (r"C:\Users\LMC\AppData\Local\Microsoft\Edge\User Data\Default", "msedge"),
+        (r"C:\Users\LMC\AppData\Local\Google\Chrome\User Data\Default", "chrome"),
+        (r"C:\Users\LMC\AppData\Local\Google\Chrome\User Data\Profile 1", "chrome"),
     ]
-    for path, is_chrome in candidates:
+    for path, channel in candidates:
         if os.path.isdir(path):
-            return path, is_chrome
-    return None, False
+            return path, channel
+    return None, None
 
 
 def main():
@@ -216,17 +216,17 @@ def main():
             browser = p.chromium.launch(headless=False)
             page = browser.new_page()
         else:
-            profile_path, is_chrome_profile = find_chrome_profile()
+            profile_path, channel = find_chrome_profile()
             if profile_path:
-                print(f"Using Chrome profile: {profile_path}")
+                print(f"Using profile: {profile_path} (channel: {channel})")
                 try:
                     launch_args = {
                         "user_data_dir": profile_path,
                         "headless": False,
                         "args": ["--no-sandbox"],
                     }
-                    if is_chrome_profile:
-                        launch_args["channel"] = "chrome"
+                    if channel:
+                        launch_args["channel"] = channel
                     context = p.chromium.launch_persistent_context(**launch_args)
                     page = context.pages[0] if context.pages else context.new_page()
                 except Exception as e:
