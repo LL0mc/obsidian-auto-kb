@@ -13,16 +13,16 @@
   'use strict';
 
   // ================================================================
-  // React fiber extraction — full tree scan for messages array
+  // React fiber extraction — scan entire fiber tree for messages
   // ================================================================
   function findMessagesViaReact() {
     try {
-      // Find any element with a React fiber key
-      var chatContainer = document.querySelector('.ds-virtual-list-visible-items');
-      var scanRoot = chatContainer || document.querySelector('[class*="chat"]') || document.getElementById('root');
-      if (!scanRoot) return null;
+      var root = document.getElementById('root');
+      if (!root) return null;
 
-      var fk = Object.keys(scanRoot).find(function (k) { return k.indexOf('__reactFiber$') === 0; });
+      var fk = Object.keys(root).find(function (k) {
+        return k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactContainer$') === 0;
+      });
       if (!fk) return null;
 
       function hasMessages(obj) {
@@ -36,54 +36,62 @@
         return null;
       }
 
-      // Walk up from the chat container
-      var f = scanRoot[fk];
-      for (var i = 0; i < 30; i++) {
-        if (!f) break;
-        if (f.memoizedState) {
-          var chain = f.memoizedState;
-          var idx = 0;
-          while (chain && idx < 20) {
-            var val = chain.memoizedState;
-            var found = hasMessages(val);
-            if (found) return found;
-            if (val && typeof val === 'object' && !Array.isArray(val)) {
-              for (var k of Object.keys(val)) {
-                found = hasMessages(val[k]);
-                if (found) return found;
-              }
+      function checkState(state) {
+        if (!state) return null;
+        var chain = state;
+        var idx = 0;
+        while (chain && idx < 30) {
+          var val = chain.memoizedState;
+          var found = hasMessages(val);
+          if (found) return found;
+          if (val && typeof val === 'object' && !Array.isArray(val)) {
+            for (var k of Object.keys(val)) {
+              found = hasMessages(val[k]);
+              if (found) return found;
             }
-            chain = chain.next;
-            idx++;
           }
+          chain = chain.next;
+          idx++;
         }
-        f = f.return;
+        return null;
       }
 
-      // Full tree scan as fallback
-      function scan(node, depth) {
-        if (!node || depth > 50) return null;
-        if (node.memoizedState) {
-          var chain = node.memoizedState;
-          var idx = 0;
-          while (chain && idx < 20) {
-            var val = chain.memoizedState;
-            var found = hasMessages(val);
+      // Walk up from chat container first (fast path)
+      var chatContainer = document.querySelector('.ds-virtual-list-visible-items');
+      if (chatContainer) {
+        var ck = Object.keys(chatContainer).find(function (k) { return k.indexOf('__reactFiber$') === 0; });
+        if (ck) {
+          var f = chatContainer[ck];
+          for (var i = 0; i < 40; i++) {
+            if (!f) break;
+            var found = checkState(f.memoizedState);
             if (found) return found;
-            if (val && typeof val === 'object' && !Array.isArray(val)) {
-              for (var k of Object.keys(val)) {
-                found = hasMessages(val[k]);
-                if (found) return found;
+            f = f.return;
+          }
+        }
+      }
+
+      // Full tree scan from root
+      function scan(node, depth) {
+        if (!node || depth > 60) return null;
+        var found = checkState(node.memoizedState);
+        if (found) return found;
+        // Also check props for message arrays
+        if (node.memoizedProps) {
+          for (var pk of Object.keys(node.memoizedProps)) {
+            var pv = node.memoizedProps[pk];
+            if (Array.isArray(pv) && pv.length > 2) {
+              var first = pv[0];
+              if (first && first.role && (first.fragments || first.content !== undefined)) {
+                return pv;
               }
             }
-            chain = chain.next;
-            idx++;
           }
         }
         return scan(node.child, depth + 1) || scan(node.sibling, depth + 1);
       }
 
-      return scan(scanRoot[fk], 0);
+      return scan(root[fk], 0);
     } catch (e) {}
     return null;
   }
