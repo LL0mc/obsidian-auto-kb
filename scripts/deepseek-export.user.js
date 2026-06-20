@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DeepSeek Chat Exporter (Adapted for KB)
 // @namespace    http://tampermonkey.net/
-// @version      3.1.0
+// @version      3.2.0
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
@@ -13,26 +13,23 @@
   'use strict';
 
   // ================================================================
-  // Phase 1: API interceptor — accumulate ALL messages
+  // Phase 1: API interceptor (best-effort)
   // ================================================================
   const apiMessagesById = new Map();
-  let apiReady = false;
 
   const API_PATTERNS = [
     '/api/v0/share/content',
     '/api/v0/chat/',
     '/api/v1/chat/',
-    '/api/conversation',
-    '/api/session',
   ];
 
   function parseApiMessages(data) {
-    if (!data || typeof data !== 'object') return;
+    if (!data || typeof data !== 'object') return false;
     var bizData = null;
     try { bizData = data.data.data.biz_data; } catch (e) {}
     if (!bizData) try { bizData = data.data.biz_data; } catch (e) {}
     if (!bizData) try { bizData = data.biz_data; } catch (e) {}
-    if (!bizData || !bizData.messages) return;
+    if (!bizData || !bizData.messages) return false;
 
     var messages = bizData.messages;
     for (var i = 0; i < messages.length; i++) {
@@ -42,36 +39,27 @@
 
       var role = (m.role || '').toUpperCase();
       var fragments = m.fragments || [];
-      var userContent = '';
-      var aiContent = '';
-      var thinkingParts = [];
+      var userContent = '', aiContent = '', thinkingParts = [];
 
       for (var j = 0; j < fragments.length; j++) {
         var frag = fragments[j];
         var ftype = frag.type || '';
         var content = frag.content || '';
-
         if (ftype === 'REQUEST') userContent = content;
         else if (ftype === 'RESPONSE') aiContent = content;
         else if (ftype === 'THINK' && content) thinkingParts.push(content);
       }
 
       if (role === 'USER' && userContent) {
-        apiMessagesById.set(mid, {
-          role: 'user',
-          message_id: mid,
-          content: userContent,
-        });
+        apiMessagesById.set(mid, { role: 'user', message_id: mid, content: userContent });
       } else if (role === 'ASSISTANT') {
         apiMessagesById.set(mid, {
-          role: 'assistant',
-          message_id: mid,
-          content: aiContent,
+          role: 'assistant', message_id: mid, content: aiContent,
           thinkingMd: thinkingParts.join('\n\n'),
         });
       }
     }
-    apiReady = true;
+    return true;
   }
 
   var origFetch = window.fetch.bind(window);
@@ -79,8 +67,7 @@
     return origFetch(input, init).then(function (response) {
       if (response.ok) {
         var url = typeof input === 'string' ? input : (input && input.url) || '';
-        var matched = API_PATTERNS.some(function (p) { return url.indexOf(p) !== -1; });
-        if (matched) {
+        if (API_PATTERNS.some(function (p) { return url.indexOf(p) !== -1; })) {
           response.clone().json().then(function (data) { parseApiMessages(data); }).catch(function () {});
         }
       }
@@ -89,89 +76,200 @@
   };
 
   // ================================================================
-  // Phase 2: UI & Export logic (runs when DOM is ready)
+  // Phase 2: React fiber extraction (reliable fallback)
+  // ================================================================
+  function findMessagesViaReact() {
+    try {
+      var root = document.getElementById('root');
+      if (!root) return null;
+      var fk = Object.keys(root).find(function (k) {
+        return k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0;
+      });
+      if (!fk) return null;
+
+      function isMessageArray(arr) {
+        if (!Array.isArray(arr) || arr.length < 2) return false;
+        var first = arr[0];
+        if (!first || typeof first !== 'object') return false;
+        // Check for DeepSeek API structure: {role, fragments/message_id}
+        if (first.role && (first.fragments || first.message_id)) return true;
+        // Check for simple structure: {role, content}
+        if (first.role && first.content !== undefined && typeof first.content === 'string') return true;
+        return false;
+      }
+
+      function scanFiberState(state) {
+        if (!state) return null;
+        var chain = state;
+        while (chain) {
+          var val = chain.memoizedState;
+          if (isMessageArray(val)) return val;
+          // Check objects inside memoizedState
+          if (val && typeof val === 'object' && !Array.isArray(val)) {
+            for (var k of Object.keys(val)) {
+              var v = val[k];
+              if (isMessageArray(v)) return v;
+            }
+          }
+          chain = chain.next;
+        }
+        return null;
+      }
+
+      function scan(node, depth) {
+        if (!node || depth > 50) return null;
+        // Check memoizedState linked list
+        if (node.memoizedState) {
+          var result = scanFiberState(node.memoizedState);
+          if (result) return result;
+        }
+        // Check stateNode.state (class components)
+        if (node.stateNode && node.stateNode.state) {
+          for (var sk of Object.keys(node.stateNode.state)) {
+            var sv = node.stateNode.state[sk];
+            if (isMessageArray(sv)) return sv;
+          }
+        }
+        // Check memoizedProps
+        if (node.memoizedProps) {
+          var props = node.memoizedProps;
+          for (var pk of Object.keys(props)) {
+            var pv = props[pk];
+            if (isMessageArray(pv)) return pv;
+          }
+        }
+        return scan(node.child, depth + 1) || scan(node.sibling, depth + 1);
+      }
+
+      return scan(root[fk], 0);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ================================================================
+  // Phase 3: DOM extraction (last resort)
+  // ================================================================
+  var SEL = {
+    chatContainer: '.ds-virtual-list-visible-items',
+    userMessage: '._9663006',
+    userContent: '.fbb737a4',
+    aiMessage: '._4f9bf79',
+    thinkChain: '.e1675d8b',
+    answerMain: '.ds-markdown',
+  };
+
+  function collectFromDOM() {
+    var msgs = [];
+    var userEls = document.querySelectorAll(SEL.userMessage);
+    var aiEls = document.querySelectorAll(SEL.aiMessage);
+    var all = [];
+    userEls.forEach(function (el) { all.push({ el: el, role: 'user' }); });
+    aiEls.forEach(function (el) { all.push({ el: el, role: 'assistant' }); });
+    all.sort(function (a, b) {
+      var p = a.el.compareDocumentPosition(b.el);
+      return (p & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : (p & Node.DOCUMENT_POSITION_PRECEDING) ? 1 : 0;
+    });
+    for (var i = 0; i < all.length; i++) {
+      var item = all[i];
+      if (item.role === 'user') {
+        var ce = item.el.querySelector(SEL.userContent);
+        if (ce && ce.textContent.trim()) msgs.push({ role: 'user', content: ce.textContent.trim() });
+      } else {
+        var msg = { role: 'assistant', content: '', thinkingMd: '' };
+        var tke = item.el.querySelector(SEL.thinkChain);
+        if (tke) msg.thinkingMd = tke.textContent.replace(/\s+/g, ' ').trim();
+        var allMd = item.el.querySelectorAll(SEL.answerMain);
+        for (var j = 0; j < allMd.length; j++) {
+          if (!allMd[j].closest(SEL.thinkChain)) {
+            msg.content = allMd[j].textContent.replace(/\s+/g, ' ').trim();
+            break;
+          }
+        }
+        if (msg.content || msg.thinkingMd) msgs.push(msg);
+      }
+    }
+    return msgs;
+  }
+
+  // ================================================================
+  // Phase 4: Unified message getter
+  // ================================================================
+  function normalizeApiMessage(m) {
+    if (m.fragments) {
+      // API format: extract from fragments
+      var userContent = '', aiContent = '', thinkingParts = [];
+      for (var j = 0; j < m.fragments.length; j++) {
+        var frag = m.fragments[j];
+        var ftype = frag.type || '';
+        var content = frag.content || '';
+        if (ftype === 'REQUEST') userContent = content;
+        else if (ftype === 'RESPONSE') aiContent = content;
+        else if (ftype === 'THINK' && content) thinkingParts.push(content);
+      }
+      var role = (m.role || '').toUpperCase();
+      if (role === 'USER') return { role: 'user', content: userContent };
+      if (role === 'ASSISTANT') return {
+        role: 'assistant', content: aiContent,
+        thinkingMd: thinkingParts.join('\n\n'),
+      };
+    }
+    // Simple format: {role, content}
+    if (m.role && m.content !== undefined) {
+      return {
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content || '',
+        thinkingMd: m.thinkingMd || '',
+      };
+    }
+    return null;
+  }
+
+  function getOrderedMessages() {
+    return new Promise(function (resolve) {
+      // Strategy 1: API intercepted
+      if (apiMessagesById.size > 0) {
+        var msgs = Array.from(apiMessagesById.values())
+          .sort(function (a, b) { return (a.message_id || 0) - (b.message_id || 0); })
+          .map(normalizeApiMessage).filter(Boolean);
+        if (msgs.length > 0) { resolve({ msgs: msgs, source: 'API' }); return; }
+      }
+
+      // Strategy 2: React fiber (wait up to 15s)
+      var attempts = 0;
+      var checker = setInterval(function () {
+        attempts++;
+        var reactMsgs = findMessagesViaReact();
+        if (reactMsgs && reactMsgs.length > 0) {
+          clearInterval(checker);
+          var normalized = reactMsgs.map(normalizeApiMessage).filter(Boolean);
+          if (normalized.length > 0) { resolve({ msgs: normalized, source: 'React' }); return; }
+        }
+        // Strategy 3: API data arrived
+        if (apiMessagesById.size > 0) {
+          clearInterval(checker);
+          var msgs = Array.from(apiMessagesById.values())
+            .sort(function (a, b) { return (a.message_id || 0) - (b.message_id || 0); })
+            .map(normalizeApiMessage).filter(Boolean);
+          resolve({ msgs: msgs, source: 'API' });
+          return;
+        }
+        if (attempts > 30) {
+          clearInterval(checker);
+          // Strategy 4: DOM fallback
+          resolve({ msgs: collectFromDOM(), source: 'DOM' });
+        }
+      }, 500);
+    });
+  }
+
+  // ================================================================
+  // Phase 5: UI
   // ================================================================
   function initUI() {
-    // === Selectors (kept as DOM fallback) ===
-    var SEL = {
-      chatContainer: '.ds-virtual-list-visible-items',
-      userMessage: '._9663006',
-      userContent: '.fbb737a4',
-      aiMessage: '._4f9bf79',
-      thinkChain: '.e1675d8b',
-      answerMain: '.ds-markdown',
-    };
-
     function getChatTitle() {
       var m = window.location.href.match(/\/(?:s|share)\/([a-z0-9]+)/);
       return m ? 'DeepSeek Chat (' + m[1].slice(0, 8) + ')' : 'DeepSeek Chat';
-    }
-
-    function cleanText(el) { return el ? el.textContent.replace(/\s+/g, ' ').trim() : ''; }
-
-    function findAnswerEl(node) {
-      var all = node.querySelectorAll(SEL.answerMain);
-      for (var i = 0; i < all.length; i++) { if (!all[i].closest(SEL.thinkChain)) return all[i]; }
-      return null;
-    }
-
-    // === DOM-based extraction (fallback) ===
-    function collectFromDOM() {
-      var msgs = [];
-      var userEls = document.querySelectorAll(SEL.userMessage);
-      var aiEls = document.querySelectorAll(SEL.aiMessage);
-      var all = [];
-      userEls.forEach(function (el) { all.push({ el: el, role: 'user' }); });
-      aiEls.forEach(function (el) { all.push({ el: el, role: 'assistant' }); });
-      all.sort(function (a, b) {
-        var p = a.el.compareDocumentPosition(b.el);
-        return (p & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : (p & Node.DOCUMENT_POSITION_PRECEDING) ? 1 : 0;
-      });
-      for (var i = 0; i < all.length; i++) {
-        var item = all[i];
-        if (item.role === 'user') {
-          var ce = item.el.querySelector(SEL.userContent);
-          if (ce && ce.textContent.trim()) msgs.push({ role: 'user', content: ce.textContent.trim() });
-        } else {
-          var msg = { role: 'assistant', content: '', thinkingMd: '' };
-          var tke = item.el.querySelector(SEL.thinkChain);
-          if (tke) msg.thinkingMd = tke.textContent.replace(/\s+/g, ' ').trim();
-          var ae = findAnswerEl(item.el);
-          if (ae) msg.content = ae.textContent.replace(/\s+/g, ' ').trim();
-          if (msg.content || msg.thinkingMd) msgs.push(msg);
-        }
-      }
-      return msgs;
-    }
-
-    // === Get ordered messages (API优先, DOM兜底) ===
-    function getOrderedMessages() {
-      return new Promise(function (resolve) {
-        // Strategy 1: API-intercepted data (most reliable)
-        if (apiMessagesById.size > 0) {
-          var msgs = Array.from(apiMessagesById.values())
-            .sort(function (a, b) { return (a.message_id || 0) - (b.message_id || 0); });
-          resolve(msgs);
-          return;
-        }
-
-        // Strategy 2: Wait for API data (poll for 10s)
-        var attempts = 0;
-        var checker = setInterval(function () {
-          attempts++;
-          if (apiMessagesById.size > 0 || attempts > 20) {
-            clearInterval(checker);
-            if (apiMessagesById.size > 0) {
-              var msgs = Array.from(apiMessagesById.values())
-                .sort(function (a, b) { return (a.message_id || 0) - (b.message_id || 0); });
-              resolve(msgs);
-            } else {
-              // Strategy 3: DOM fallback
-              resolve(collectFromDOM());
-            }
-          }
-        }, 500);
-      });
     }
 
     function generateMd(messages) {
@@ -225,13 +323,12 @@
       btn.addEventListener('mouseleave', function () { btn.style.background = '#3964fe'; });
       btn.addEventListener('click', function () {
         btn.textContent = 'Exporting...';
-        getOrderedMessages().then(function (messages) {
+        getOrderedMessages().then(function (result) {
           btn.textContent = 'Export';
-          if (!messages.length) { alert('No messages found.'); return; }
-          var md = generateMd(messages);
-          var source = apiMessagesById.size > 0 ? 'API' : 'DOM';
-          return saveMd(md).then(function (result) {
-            if (result) alert(result + ' (' + messages.length + ' msgs via ' + source + ')');
+          if (!result.msgs.length) { alert('No messages found.'); return; }
+          var md = generateMd(result.msgs);
+          return saveMd(md).then(function (r) {
+            if (r) alert(r + ' (' + result.msgs.length + ' msgs via ' + result.source + ')');
           });
         });
       });
@@ -239,7 +336,7 @@
     }
 
     var id = setInterval(function () {
-      if (document.querySelector(SEL.chatContainer) || apiReady) {
+      if (document.querySelector(SEL.chatContainer)) {
         clearInterval(id);
         addButton();
       }
