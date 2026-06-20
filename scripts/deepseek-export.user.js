@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DeepSeek Chat Exporter (Adapted for KB)
 // @namespace    http://tampermonkey.net/
-// @version      3.0.0
+// @version      3.1.0
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
@@ -92,11 +92,59 @@
   // Phase 2: UI & Export logic (runs when DOM is ready)
   // ================================================================
   function initUI() {
+    // === Selectors (kept as DOM fallback) ===
+    var SEL = {
+      chatContainer: '.ds-virtual-list-visible-items',
+      userMessage: '._9663006',
+      userContent: '.fbb737a4',
+      aiMessage: '._4f9bf79',
+      thinkChain: '.e1675d8b',
+      answerMain: '.ds-markdown',
+    };
+
     function getChatTitle() {
       var m = window.location.href.match(/\/(?:s|share)\/([a-z0-9]+)/);
       return m ? 'DeepSeek Chat (' + m[1].slice(0, 8) + ')' : 'DeepSeek Chat';
     }
 
+    function cleanText(el) { return el ? el.textContent.replace(/\s+/g, ' ').trim() : ''; }
+
+    function findAnswerEl(node) {
+      var all = node.querySelectorAll(SEL.answerMain);
+      for (var i = 0; i < all.length; i++) { if (!all[i].closest(SEL.thinkChain)) return all[i]; }
+      return null;
+    }
+
+    // === DOM-based extraction (fallback) ===
+    function collectFromDOM() {
+      var msgs = [];
+      var userEls = document.querySelectorAll(SEL.userMessage);
+      var aiEls = document.querySelectorAll(SEL.aiMessage);
+      var all = [];
+      userEls.forEach(function (el) { all.push({ el: el, role: 'user' }); });
+      aiEls.forEach(function (el) { all.push({ el: el, role: 'assistant' }); });
+      all.sort(function (a, b) {
+        var p = a.el.compareDocumentPosition(b.el);
+        return (p & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : (p & Node.DOCUMENT_POSITION_PRECEDING) ? 1 : 0;
+      });
+      for (var i = 0; i < all.length; i++) {
+        var item = all[i];
+        if (item.role === 'user') {
+          var ce = item.el.querySelector(SEL.userContent);
+          if (ce && ce.textContent.trim()) msgs.push({ role: 'user', content: ce.textContent.trim() });
+        } else {
+          var msg = { role: 'assistant', content: '', thinkingMd: '' };
+          var tke = item.el.querySelector(SEL.thinkChain);
+          if (tke) msg.thinkingMd = tke.textContent.replace(/\s+/g, ' ').trim();
+          var ae = findAnswerEl(item.el);
+          if (ae) msg.content = ae.textContent.replace(/\s+/g, ' ').trim();
+          if (msg.content || msg.thinkingMd) msgs.push(msg);
+        }
+      }
+      return msgs;
+    }
+
+    // === Get ordered messages (API优先, DOM兜底) ===
     function getOrderedMessages() {
       return new Promise(function (resolve) {
         // Strategy 1: API-intercepted data (most reliable)
@@ -107,24 +155,23 @@
           return;
         }
 
-        // Strategy 2: Wait a bit for API to load, then retry
+        // Strategy 2: Wait for API data (poll for 10s)
         var attempts = 0;
         var checker = setInterval(function () {
           attempts++;
           if (apiMessagesById.size > 0 || attempts > 20) {
             clearInterval(checker);
-            var msgs = Array.from(apiMessagesById.values())
-              .sort(function (a, b) { return (a.message_id || 0) - (b.message_id || 0); });
-            resolve(msgs);
+            if (apiMessagesById.size > 0) {
+              var msgs = Array.from(apiMessagesById.values())
+                .sort(function (a, b) { return (a.message_id || 0) - (b.message_id || 0); });
+              resolve(msgs);
+            } else {
+              // Strategy 3: DOM fallback
+              resolve(collectFromDOM());
+            }
           }
         }, 500);
       });
-    }
-
-    // === Markdown helpers ===
-    function unescape(s) {
-      return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#x27;/g, "'").replace(/&#x2F;/g, '/');
     }
 
     function generateMd(messages) {
@@ -142,7 +189,6 @@
       return md;
     }
 
-    // === Save ===
     function saveMd(md) {
       var ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       var name = 'deepseek_' + ts + '.md';
@@ -163,7 +209,6 @@
       });
     }
 
-    // === Button ===
     var btn = null;
     function addButton() {
       if (btn) return;
@@ -179,25 +224,28 @@
       btn.addEventListener('mouseenter', function () { btn.style.background = '#2851e0'; });
       btn.addEventListener('mouseleave', function () { btn.style.background = '#3964fe'; });
       btn.addEventListener('click', function () {
+        btn.textContent = 'Exporting...';
         getOrderedMessages().then(function (messages) {
+          btn.textContent = 'Export';
           if (!messages.length) { alert('No messages found.'); return; }
           var md = generateMd(messages);
-          return saveMd(md).then(function (result) { if (result) alert(result); });
+          var source = apiMessagesById.size > 0 ? 'API' : 'DOM';
+          return saveMd(md).then(function (result) {
+            if (result) alert(result + ' (' + messages.length + ' msgs via ' + source + ')');
+          });
         });
       });
       document.body.appendChild(btn);
     }
 
-    // === Wait for chat container or API data ===
     var id = setInterval(function () {
-      if (document.querySelector('.ds-virtual-list-visible-items') || apiReady) {
+      if (document.querySelector(SEL.chatContainer) || apiReady) {
         clearInterval(id);
         addButton();
       }
     }, 500);
   }
 
-  // === Wait for DOM before launching UI ===
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initUI);
   } else {
