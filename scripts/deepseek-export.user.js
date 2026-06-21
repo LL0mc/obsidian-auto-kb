@@ -36,7 +36,19 @@
             });
             db.close();
             if (!target || !target.data || !target.data.chat_messages) { resolve(null); return; }
-            resolve(extractFromChatMessages(target.data.chat_messages));
+            var chatMsgs = target.data.chat_messages;
+            // Sort by conversation order using parent_id chain
+            var msgById = {};
+            chatMsgs.forEach(function (m) { msgById[m.message_id] = m; });
+            var latest = chatMsgs.reduce(function (a, b) { return a.message_id > b.message_id ? a : b; });
+            var chain = [];
+            var cur = latest;
+            while (cur) {
+              chain.push(cur);
+              cur = cur.parent_id ? msgById[cur.parent_id] : null;
+            }
+            chain.reverse();
+            resolve(extractFromChatMessages(chain));
           };
           getAll.onerror = function () { db.close(); resolve(null); };
         };
@@ -70,6 +82,8 @@
   }
 
   function extractFromChatMessages(rawMsgs) {
+    if (!rawMsgs || rawMsgs.length === 0) return [];
+
     return rawMsgs.map(function (m) {
       var role = (m.role || '').toUpperCase();
       var fragments = m.fragments || [];
