@@ -35,9 +35,10 @@ def extract_messages_from_api(data):
             try:
                 biz_data = data["biz_data"]
             except (KeyError, TypeError):
-                return messages
+    return conv_title, messages
 
     raw_msgs = biz_data.get("messages", []) if isinstance(biz_data, dict) else []
+    conv_title = biz_data.get("title", "") if isinstance(biz_data, dict) else ""
 
     for m in raw_msgs:
         role = m.get("role", "").upper()
@@ -124,7 +125,7 @@ def main():
     is_share = "/share/" in url
     m = re.search(r"/(?:s|share)/([a-z0-9-]+)", url)
     session_id = m.group(1) if m else "unknown"
-    title = f"DeepSeek Chat ({session_id[:8]})"
+    title = ""
 
     print(f"Opening: {url}")
     print(f"Type: {'share (public)' if is_share else 'private session'}")
@@ -161,12 +162,17 @@ def main():
                 page = browser.new_page()
 
         # Intercept API responses
+        conv_title = ""
+
         def on_response(response):
+            nonlocal conv_title
             resp_url = response.url
             if any(pat in resp_url for pat in API_PATTERNS):
                 try:
                     body = response.json()
-                    msgs = extract_messages_from_api(body)
+                    title, msgs = extract_messages_from_api(body)
+                    if title and not conv_title:
+                        conv_title = title
                     if msgs:
                         api_messages.extend(msgs)
                         print(f"  [API] {resp_url.split('?')[0].split('/')[-1]}: {len(msgs)} messages")
@@ -228,11 +234,20 @@ def main():
 
     print(f"[+] Total: {len(unique_msgs)} unique messages")
 
+    if conv_title:
+        title = conv_title
+    else:
+        title = f"DeepSeek Chat ({session_id[:8]})"
+
     md = generate_markdown(unique_msgs, title, url)
 
     # Save locally
-    ts = time.strftime("%Y-%m-%dT%H-%M-%S")
-    fname = f"deepseek_{ts}.md"
+    safe_title = re.sub(r'[\\/:*?"<>|]', '_', title).strip()[:80] if title else ""
+    if safe_title:
+        fname = f"{safe_title}.md"
+    else:
+        ts = time.strftime("%Y-%m-%dT%H-%M-%S")
+        fname = f"deepseek_{ts}.md"
     out_path = OBSIDIAN_VAULT / OUTPUT_DIR / fname
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md, encoding="utf-8")

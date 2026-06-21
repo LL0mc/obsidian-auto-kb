@@ -48,7 +48,8 @@
               cur = cur.parent_id ? msgById[cur.parent_id] : null;
             }
             chain.reverse();
-            resolve(extractFromChatMessages(chain));
+            var title = target.data.chat_session ? target.data.chat_session.title : '';
+            resolve({ title: title, msgs: extractFromChatMessages(chain) });
           };
           getAll.onerror = function () { db.close(); resolve(null); };
         };
@@ -63,12 +64,18 @@
   var capturedMsgs = [];
 
   function extractFromResponse(data) {
-    if (!data || typeof data !== 'object') return [];
+    if (!data || typeof data !== 'object') return { title: '', msgs: [] };
     var bizData = null;
     try { bizData = data.data.data.biz_data; } catch (e) {}
     if (!bizData) try { bizData = data.data.biz_data; } catch (e) {}
     if (!bizData) try { bizData = data.biz_data; } catch (e) {}
     if (!bizData) try { bizData = data.data; } catch (e) {}
+
+    var title = '';
+    if (bizData) {
+      if (bizData.chat_session && bizData.chat_session.title) title = bizData.chat_session.title;
+      else if (bizData.title) title = bizData.title;
+    }
 
     var rawMsgs = null;
     if (bizData && bizData.messages) rawMsgs = bizData.messages;
@@ -77,8 +84,8 @@
     else if (Array.isArray(data.data)) rawMsgs = data.data;
     else if (Array.isArray(data)) rawMsgs = data;
 
-    if (!rawMsgs || rawMsgs.length === 0) return [];
-    return extractFromChatMessages(rawMsgs);
+    if (!rawMsgs || rawMsgs.length === 0) return { title: title, msgs: [] };
+    return { title: title, msgs: extractFromChatMessages(rawMsgs) };
   }
 
   function extractFromChatMessages(rawMsgs) {
@@ -183,9 +190,14 @@
       return md;
     }
 
-    function saveMd(md) {
-      var ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      var name = 'deepseek_' + ts + '.md';
+    function saveMd(md, title) {
+      var name;
+      if (title) {
+        name = title.replace(/[\\/:*?"<>|]/g, '_').substring(0, 80) + '.md';
+      } else {
+        var ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        name = 'deepseek_' + ts + '.md';
+      }
       var path = 'kb/raw/deepseek/' + name;
 
       return fetch('https://127.0.0.1:27124/vault/' + path, {
@@ -234,20 +246,19 @@
 
       // Strategy 1: IndexedDB for private chat
       if (isPrivate) {
-        fetchFromIndexedDB().then(function (msgs) {
-          if (msgs && msgs.length > 0) {
-            finish(msgs, 'IndexedDB');
+        fetchFromIndexedDB().then(function (result) {
+          if (result && result.msgs.length > 0) {
+            finish(result.msgs, result.title, 'IndexedDB');
             return;
           }
-          // Fallback to captured API
-          finish(capturedMsgs.slice(), 'XHR');
+          finish(capturedMsgs.slice(), '', 'XHR');
         });
         return;
       }
 
       // Strategy 2: Captured API messages for share pages
       if (capturedMsgs.length > 0) {
-        finish(capturedMsgs.slice(), 'XHR');
+        finish(capturedMsgs.slice(), '', 'XHR');
         return;
       }
 
@@ -257,22 +268,22 @@
         origFetch('/api/v0/share/content?share_id=' + shareMatch[1])
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (data) {
-            var msgs = data ? extractFromResponse(data) : [];
-            finish(msgs, 'API');
+            var result = data ? extractFromResponse(data) : { title: '', msgs: [] };
+            finish(result.msgs, result.title, 'API');
           })
-          .catch(function () { finish([], 'none'); });
+          .catch(function () { finish([], '', 'none'); });
         return;
       }
 
-      finish([], 'none');
+      finish([], '', 'none');
     }
 
-    function finish(msgs, source) {
+    function finish(msgs, title, source) {
       btn.textContent = 'Export';
       btn.style.background = '#3964fe';
       if (!msgs.length) { alert('No messages found.'); return; }
       var md = generateMd(msgs);
-      saveMd(md).then(function (r) {
+      saveMd(md, title).then(function (r) {
         if (r) alert(r + ' (' + msgs.length + ' msgs via ' + source + ')');
       });
     }
