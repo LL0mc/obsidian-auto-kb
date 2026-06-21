@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DeepSeek Chat Exporter (Adapted for KB)
 // @namespace    http://tampermonkey.net/
-// @version      7.0.0
+// @version      8.0.0
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
@@ -13,7 +13,7 @@
   'use strict';
 
   // ================================================================
-  // Phase 1: Capture API responses as the page loads
+  // Phase 1: Intercept XHR + fetch to capture API responses
   // ================================================================
   var capturedMsgs = [];
 
@@ -48,12 +48,47 @@
       }
       if (!content && m.content) content = m.content;
 
-      if (role === 'USER' && content) return { role: 'user', content: content, id: m.id || m.message_id };
-      if (role === 'ASSISTANT') return { role: 'assistant', content: content, thinkingMd: thinkingParts.join('\n\n'), id: m.id || m.message_id };
+      if (role === 'USER' && content) return { role: 'user', content: content };
+      if (role === 'ASSISTANT') return { role: 'assistant', content: content, thinkingMd: thinkingParts.join('\n\n') };
       return null;
     }).filter(Boolean);
   }
 
+  function mergeMsgs(newMsgs) {
+    var existing = new Set(capturedMsgs.map(function (m) { return m.content.slice(0, 100); }));
+    newMsgs.forEach(function (m) {
+      var key = m.content.slice(0, 100);
+      if (!existing.has(key)) {
+        capturedMsgs.push(m);
+        existing.add(key);
+      }
+    });
+  }
+
+  // Intercept XHR
+  var origXHROpen = XMLHttpRequest.prototype.open;
+  var origXHRSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this._dsUrl = url;
+    return origXHROpen.apply(this, arguments);
+  };
+
+  XMLHttpRequest.prototype.send = function () {
+    this.addEventListener('load', function () {
+      try {
+        var url = this._dsUrl || '';
+        if (url.indexOf('/api/') !== -1 && this.status === 200) {
+          var data = JSON.parse(this.responseText);
+          var msgs = extractFromResponse(data);
+          if (msgs.length > 0) mergeMsgs(msgs);
+        }
+      } catch (e) {}
+    });
+    return origXHRSend.apply(this, arguments);
+  };
+
+  // Intercept fetch (backup)
   var origFetch = window.fetch.bind(window);
   window.fetch = function (input, init) {
     return origFetch(input, init).then(function (response) {
@@ -62,16 +97,7 @@
         if (url.indexOf('/api/') !== -1) {
           response.clone().json().then(function (data) {
             var msgs = extractFromResponse(data);
-            if (msgs.length > 0) {
-              // Merge: deduplicate by id
-              var existingIds = new Set(capturedMsgs.map(function (m) { return m.id; }));
-              msgs.forEach(function (m) {
-                if (!m.id || !existingIds.has(m.id)) {
-                  capturedMsgs.push(m);
-                  if (m.id) existingIds.add(m.id);
-                }
-              });
-            }
+            if (msgs.length > 0) mergeMsgs(msgs);
           }).catch(function () {});
         }
       }
@@ -83,9 +109,7 @@
   // Phase 2: UI
   // ================================================================
   function initUI() {
-    var SEL = {
-      chatContainer: '.ds-virtual-list-visible-items',
-    };
+    var SEL = { chatContainer: '.ds-virtual-list-visible-items' };
 
     function getChatTitle() {
       var m = window.location.href.match(/\/(?:s|share)\/([a-z0-9-]+)/);
@@ -146,11 +170,11 @@
         btn.style.background = '#888';
 
         var msgs = capturedMsgs.slice();
-        var source = 'API';
+        var source = 'XHR';
 
         if (msgs.length === 0) {
-          source = 'API (retry)';
-          // Try fetching the API directly
+          // Retry: call API directly
+          source = 'API-direct';
           var url = window.location.href;
           var shareMatch = url.match(/\/share\/([a-z0-9]+)/);
           var sessionMatch = url.match(/\/chat\/s\/([a-f0-9-]+)/);
@@ -160,14 +184,8 @@
             apiPromise = origFetch('/api/v0/share/content?share_id=' + shareMatch[1])
               .then(function (r) { return r.ok ? r.json() : null; });
           } else if (sessionMatch) {
-            // Try multiple API patterns for private chats
-            apiPromise = origFetch('/api/v0/chat/' + sessionMatch[1] + '/conversation')
-              .then(function (r) { return r.ok ? r.json() : null; })
-              .then(function (data) {
-                if (data && extractFromResponse(data).length > 0) return data;
-                return origFetch('/api/v0/chat/history?conversation_id=' + sessionMatch[1])
-                  .then(function (r) { return r.ok ? r.json() : null; });
-              });
+            apiPromise = origFetch('/api/v0/chat/history_messages?chat_session_id=' + sessionMatch[1])
+              .then(function (r) { return r.ok ? r.json() : null; });
           } else {
             apiPromise = Promise.resolve(null);
           }
@@ -176,7 +194,6 @@
             if (data) msgs = extractFromResponse(data);
             finish();
           }).catch(function () { finish(); });
-
           return;
         }
 
