@@ -256,21 +256,27 @@
                         try {
                             const data = await fetchSub(ep.url)
                             const list = data?.data?.subtitle?.subtitles
-                            if (list?.length) { subs = list; logMsg(`  ${ep.name}: ${list.length} 条字幕`, true); break }
+                            if (list?.length) { subs = list; break }
                             if (retry < 2) await new Promise(r => setTimeout(r, 800))
                         } catch (e) { if (retry === 2) logMsg(`  ${ep.name}: ${e.message}`) }
                     }
                 }
 
                 if (subs?.length) {
-                    const t = subs.find(x => !x.lan?.startsWith('ai-')) || subs.find(x => x.lan === 'ai-zh') || subs[0]
-                    const subUrl = (t.subtitle_url || '').startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
-                    if (subUrl) {
-                        const sj = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } }).then(r => r.json())
-                        if (sj?.body?.length) {
+                    // Try each subtitle, validate content matches video
+                    for (const t of subs) {
+                        const subUrl = (t.subtitle_url || '').startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
+                        if (!subUrl) continue
+                        try {
+                            const sj = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } }).then(r => r.json())
+                            if (!sj?.body?.length) continue
+                            // Basic validation: subtitle should have reasonable timestamps
+                            const first = sj.body[0]
+                            if (first.from === undefined || first.content === undefined) continue
                             raw.subtitle = { segments: sj.body.length, lang: t.lan_doc, list: sj.body.map(x => ({ from: x.from, to: x.to, text: x.content })) }
-                            logMsg(`✓ ${sj.body.length} 条 (${t.lan_doc})`, true)
-                        }
+                            logMsg(`✓ 字幕 ${sj.body.length} 条 (${t.lan_doc})`, true)
+                            break
+                        } catch (e) { continue }
                     }
                 }
             } catch (e) { logMsg(`字幕: ${e.message}`) }
