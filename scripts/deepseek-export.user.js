@@ -5,7 +5,6 @@
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
-// @grant        GM_xmlhttpRequest
 // @run-at       document-start
 // @license      MIT
 // ==/UserScript==
@@ -175,24 +174,21 @@
       var name = 'deepseek_' + ts + '.md';
       var path = 'kb/raw/deepseek/' + name;
 
-      return new Promise(function (resolve) {
-        GM_xmlhttpRequest({
-          method: 'POST',
-          url: 'https://127.0.0.1:27124/vault/' + path,
-          headers: { Authorization: 'Bearer YOUR_OBSIDIAN_TOKEN_HERE', 'Content-Type': 'text/markdown' },
-          data: md,
-          onload: function (r) { resolve(r.status < 400 ? 'Saved to ' + path : null); },
-          onerror: function () {
-            // Fallback: download as file
-            try { navigator.clipboard.writeText(md); } catch (e) {}
-            var a = document.createElement('a');
-            a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
-            a.download = name;
-            a.click();
-            setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
-            resolve('Downloaded ' + name);
-          }
-        });
+      return fetch('https://127.0.0.1:27124/vault/' + path, {
+        method: 'PUT',
+        headers: { Authorization: 'Bearer YOUR_OBSIDIAN_TOKEN_HERE', 'Content-Type': 'text/markdown' },
+        body: md
+      }).then(function (r) {
+        if (r.ok) return 'Saved to ' + path;
+        throw new Error('Status ' + r.status);
+      }).catch(function () {
+        try { navigator.clipboard.writeText(md); } catch (e) {}
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
+        a.download = name;
+        a.click();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+        return 'Downloaded ' + name;
       });
     }
 
