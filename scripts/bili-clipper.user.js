@@ -273,9 +273,9 @@
                             const sj = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } }).then(r => r.json())
                             if (!sj?.body?.length) continue
                             const lastFrom = sj.body[sj.body.length - 1]?.from || 0
-                            // If subtitle extends far beyond video duration, it's likely from another video
-                            if (duration > 0 && lastFrom > duration * 1.5) {
-                                logMsg(`  跳过可疑字幕 (${sj.body.length} 条，时长 ${Math.round(lastFrom)}s > 视频 ${duration}s)`)
+                            // If subtitle duration is far from video duration, likely wrong video
+                            if (duration > 0 && (lastFrom > duration * 1.5 || lastFrom < duration * 0.1)) {
+                                logMsg(`  跳过可疑字幕 (${sj.body.length} 条，时长 ${Math.round(lastFrom)}s vs 视频 ${duration}s)`)
                                 continue
                             }
                             raw.subtitle = { segments: sj.body.length, lang: t.lan_doc, list: sj.body.map(x => ({ from: x.from, to: x.to, text: x.content })) }
