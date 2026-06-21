@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DeepSeek Chat Exporter (Adapted for KB)
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0
+// @version      9.0.0
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
@@ -13,7 +13,40 @@
   'use strict';
 
   // ================================================================
-  // Phase 1: Intercept XHR + fetch to capture API responses
+  // Strategy 1: Read from IndexedDB (private chat pages)
+  // ================================================================
+  function fetchFromIndexedDB() {
+    return new Promise(function (resolve) {
+      try {
+        var url = window.location.href;
+        var sessionMatch = url.match(/\/chat\/s\/([a-f0-9-]+)/);
+        if (!sessionMatch) { resolve(null); return; }
+
+        var sessionId = sessionMatch[1];
+        var req = indexedDB.open('deepseek-chat', 1);
+        req.onsuccess = function (e) {
+          var db = e.target.result;
+          var tx = db.transaction('history-message', 'readonly');
+          var store = tx.objectStore('history-message');
+          var getAll = store.getAll();
+          getAll.onsuccess = function () {
+            var data = getAll.result;
+            var target = data.find(function (d) {
+              return d.data && d.data.chat_session && d.data.chat_session.id === sessionId;
+            });
+            db.close();
+            if (!target || !target.data || !target.data.chat_messages) { resolve(null); return; }
+            resolve(extractFromChatMessages(target.data.chat_messages));
+          };
+          getAll.onerror = function () { db.close(); resolve(null); };
+        };
+        req.onerror = function () { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  }
+
+  // ================================================================
+  // Strategy 2: Intercept API responses (share pages + XHR)
   // ================================================================
   var capturedMsgs = [];
 
@@ -27,12 +60,16 @@
 
     var rawMsgs = null;
     if (bizData && bizData.messages) rawMsgs = bizData.messages;
+    else if (bizData && bizData.chat_messages) rawMsgs = bizData.chat_messages;
     else if (Array.isArray(bizData)) rawMsgs = bizData;
     else if (Array.isArray(data.data)) rawMsgs = data.data;
     else if (Array.isArray(data)) rawMsgs = data;
 
     if (!rawMsgs || rawMsgs.length === 0) return [];
+    return extractFromChatMessages(rawMsgs);
+  }
 
+  function extractFromChatMessages(rawMsgs) {
     return rawMsgs.map(function (m) {
       var role = (m.role || '').toUpperCase();
       var fragments = m.fragments || [];
@@ -54,17 +91,6 @@
     }).filter(Boolean);
   }
 
-  function mergeMsgs(newMsgs) {
-    var existing = new Set(capturedMsgs.map(function (m) { return m.content.slice(0, 100); }));
-    newMsgs.forEach(function (m) {
-      var key = m.content.slice(0, 100);
-      if (!existing.has(key)) {
-        capturedMsgs.push(m);
-        existing.add(key);
-      }
-    });
-  }
-
   // Intercept XHR
   var origXHROpen = XMLHttpRequest.prototype.open;
   var origXHRSend = XMLHttpRequest.prototype.send;
@@ -81,7 +107,13 @@
         if (url.indexOf('/api/') !== -1 && this.status === 200) {
           var data = JSON.parse(this.responseText);
           var msgs = extractFromResponse(data);
-          if (msgs.length > 0) mergeMsgs(msgs);
+          if (msgs.length > 0) {
+            var existing = new Set(capturedMsgs.map(function (m) { return m.content.slice(0, 100); }));
+            msgs.forEach(function (m) {
+              var key = m.content.slice(0, 100);
+              if (!existing.has(key)) { capturedMsgs.push(m); existing.add(key); }
+            });
+          }
         }
       } catch (e) {}
     });
@@ -97,7 +129,13 @@
         if (url.indexOf('/api/') !== -1) {
           response.clone().json().then(function (data) {
             var msgs = extractFromResponse(data);
-            if (msgs.length > 0) mergeMsgs(msgs);
+            if (msgs.length > 0) {
+              var existing = new Set(capturedMsgs.map(function (m) { return m.content.slice(0, 100); }));
+              msgs.forEach(function (m) {
+                var key = m.content.slice(0, 100);
+                if (!existing.has(key)) { capturedMsgs.push(m); existing.add(key); }
+              });
+            }
           }).catch(function () {});
         }
       }
@@ -106,7 +144,7 @@
   };
 
   // ================================================================
-  // Phase 2: UI
+  // UI
   // ================================================================
   function initUI() {
     var SEL = { chatContainer: '.ds-virtual-list-visible-items' };
@@ -168,48 +206,58 @@
       btn.addEventListener('click', function () {
         btn.textContent = 'Exporting...';
         btn.style.background = '#888';
-
-        var msgs = capturedMsgs.slice();
-        var source = 'XHR';
-
-        if (msgs.length === 0) {
-          // Retry: call API directly
-          source = 'API-direct';
-          var url = window.location.href;
-          var shareMatch = url.match(/\/share\/([a-z0-9]+)/);
-          var sessionMatch = url.match(/\/chat\/s\/([a-f0-9-]+)/);
-
-          var apiPromise;
-          if (shareMatch) {
-            apiPromise = origFetch('/api/v0/share/content?share_id=' + shareMatch[1])
-              .then(function (r) { return r.ok ? r.json() : null; });
-          } else if (sessionMatch) {
-            apiPromise = origFetch('/api/v0/chat/history_messages?chat_session_id=' + sessionMatch[1])
-              .then(function (r) { return r.ok ? r.json() : null; });
-          } else {
-            apiPromise = Promise.resolve(null);
-          }
-
-          apiPromise.then(function (data) {
-            if (data) msgs = extractFromResponse(data);
-            finish();
-          }).catch(function () { finish(); });
-          return;
-        }
-
-        finish();
-
-        function finish() {
-          btn.textContent = 'Export';
-          btn.style.background = '#3964fe';
-          if (!msgs.length) { alert('No messages found.'); return; }
-          var md = generateMd(msgs);
-          saveMd(md).then(function (r) {
-            if (r) alert(r + ' (' + msgs.length + ' msgs via ' + source + ')');
-          });
-        }
+        doExport();
       });
       document.body.appendChild(btn);
+    }
+
+    function doExport() {
+      var isShare = /\/share\//.test(window.location.href);
+      var isPrivate = /\/chat\/s\//.test(window.location.href);
+
+      // Strategy 1: IndexedDB for private chat
+      if (isPrivate) {
+        fetchFromIndexedDB().then(function (msgs) {
+          if (msgs && msgs.length > 0) {
+            finish(msgs, 'IndexedDB');
+            return;
+          }
+          // Fallback to captured API
+          finish(capturedMsgs.slice(), 'XHR');
+        });
+        return;
+      }
+
+      // Strategy 2: Captured API messages for share pages
+      if (capturedMsgs.length > 0) {
+        finish(capturedMsgs.slice(), 'XHR');
+        return;
+      }
+
+      // Strategy 3: Direct API call
+      var shareMatch = window.location.href.match(/\/share\/([a-z0-9]+)/);
+      if (shareMatch) {
+        origFetch('/api/v0/share/content?share_id=' + shareMatch[1])
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            var msgs = data ? extractFromResponse(data) : [];
+            finish(msgs, 'API');
+          })
+          .catch(function () { finish([], 'none'); });
+        return;
+      }
+
+      finish([], 'none');
+    }
+
+    function finish(msgs, source) {
+      btn.textContent = 'Export';
+      btn.style.background = '#3964fe';
+      if (!msgs.length) { alert('No messages found.'); return; }
+      var md = generateMd(msgs);
+      saveMd(md).then(function (r) {
+        if (r) alert(r + ' (' + msgs.length + ' msgs via ' + source + ')');
+      });
     }
 
     var id = setInterval(function () {
