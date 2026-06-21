@@ -240,6 +240,37 @@
       document.body.appendChild(btn);
     }
 
+    // Fallback: create share link, fetch messages, then delete share
+    function tryShareFallback() {
+      // Step 1: Create share link
+      origFetch('/api/v0/share/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.data || !data.data.share_id) {
+          finish([], '', 'none');
+          return;
+        }
+        var shareId = data.data.share_id;
+        // Step 2: Fetch messages from share API
+        return origFetch('/api/v0/share/content?share_id=' + shareId)
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (result) {
+            var msgs = result ? extractFromResponse(result) : { title: '', msgs: [] };
+            // Step 3: Try to delete share (best effort)
+            origFetch('/api/v0/share/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ share_id: shareId })
+            }).catch(function () {});
+            finish(msgs.msgs, msgs.title, 'Share API');
+          });
+      })
+      .catch(function () { finish([], '', 'none'); });
+    }
+
     function doExport() {
       var isShare = /\/share\//.test(window.location.href);
       var isPrivate = /\/chat\/s\//.test(window.location.href);
@@ -251,7 +282,8 @@
             finish(result.msgs, result.title, 'IndexedDB');
             return;
           }
-          finish(capturedMsgs.slice(), '', 'XHR');
+          // Fallback: try to create share link and fetch from it
+          tryShareFallback();
         });
         return;
       }

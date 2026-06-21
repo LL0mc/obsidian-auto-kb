@@ -258,7 +258,7 @@
                             await new Promise(r => setTimeout(r, 500))
                             continue
                         }
-                        const t = list.find(x => x.lan === 'ai-zh') || list.find(x => x.lan_doc?.includes('中文')) || list[0]
+                        const t = list.find(x => !x.lan?.startsWith('ai-')) || list.find(x => x.lan === 'ai-zh') || list[0]
                         if (t) {
                             const subUrl = t.subtitle_url?.startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
                             if (subUrl) {
