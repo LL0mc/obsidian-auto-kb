@@ -264,18 +264,18 @@
 
                 if (subs?.length) {
                     // bilibili CDN may return wrong subtitle from another video.
-                    // Validate by checking if first subtitle text is related to this video's title.
-                    const titleWords = v.title.replace(/[（）()【】\s]/g, '').substring(0, 10)
+                    // Validate: subtitle last timestamp should be near video duration.
+                    const duration = v.duration || 0
                     for (const t of subs) {
                         const subUrl = (t.subtitle_url || '').startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
                         if (!subUrl) continue
                         try {
                             const sj = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } }).then(r => r.json())
                             if (!sj?.body?.length) continue
-                            const firstText = sj.body[0]?.content || ''
-                            // Quick check: skip if subtitle seems unrelated (e.g. lyrics for a non-music video)
-                            if (firstText.includes('♪') && !v.title.includes('歌') && !v.title.includes('音乐')) {
-                                logMsg(`  跳过可疑字幕 (${sj.body.length} 条，疑似非本视频)`)
+                            const lastFrom = sj.body[sj.body.length - 1]?.from || 0
+                            // If subtitle extends far beyond video duration, it's likely from another video
+                            if (duration > 0 && lastFrom > duration * 1.5) {
+                                logMsg(`  跳过可疑字幕 (${sj.body.length} 条，时长 ${Math.round(lastFrom)}s > 视频 ${duration}s)`)
                                 continue
                             }
                             raw.subtitle = { segments: sj.body.length, lang: t.lan_doc, list: sj.body.map(x => ({ from: x.from, to: x.to, text: x.content })) }
