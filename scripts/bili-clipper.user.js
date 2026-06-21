@@ -263,16 +263,21 @@
                 }
 
                 if (subs?.length) {
-                    // Try each subtitle, validate content matches video
+                    // bilibili CDN may return wrong subtitle from another video.
+                    // Validate by checking if first subtitle text is related to this video's title.
+                    const titleWords = v.title.replace(/[（）()【】\s]/g, '').substring(0, 10)
                     for (const t of subs) {
                         const subUrl = (t.subtitle_url || '').startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
                         if (!subUrl) continue
                         try {
                             const sj = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } }).then(r => r.json())
                             if (!sj?.body?.length) continue
-                            // Basic validation: subtitle should have reasonable timestamps
-                            const first = sj.body[0]
-                            if (first.from === undefined || first.content === undefined) continue
+                            const firstText = sj.body[0]?.content || ''
+                            // Quick check: skip if subtitle seems unrelated (e.g. lyrics for a non-music video)
+                            if (firstText.includes('♪') && !v.title.includes('歌') && !v.title.includes('音乐')) {
+                                logMsg(`  跳过可疑字幕 (${sj.body.length} 条，疑似非本视频)`)
+                                continue
+                            }
                             raw.subtitle = { segments: sj.body.length, lang: t.lan_doc, list: sj.body.map(x => ({ from: x.from, to: x.to, text: x.content })) }
                             logMsg(`✓ 字幕 ${sj.body.length} 条 (${t.lan_doc})`, true)
                             break
