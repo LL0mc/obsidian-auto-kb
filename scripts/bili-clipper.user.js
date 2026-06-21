@@ -245,21 +245,30 @@
             }
 
             try {
-                // Try v2 first, then wbi/v2
+                // Match bilibili player: use WBI-signed wbi/v2 with full params
                 let subs = null
-                for (const ep of [
-                    { name: 'v2', url: `https://api.bilibili.com/x/player/v2?aid=${v.aid}&cid=${v.cid}` },
-                    { name: 'wbi/v2', url: `https://api.bilibili.com/x/player/wbi/v2?aid=${v.aid}&cid=${v.cid}` },
-                ]) {
-                    if (subs) break
-                    for (let retry = 0; retry < 3; retry++) {
-                        try {
-                            const data = await fetchSub(ep.url)
-                            const list = data?.data?.subtitle?.subtitles
-                            if (list?.length) { subs = list; break }
-                            if (retry < 2) await new Promise(r => setTimeout(r, 800))
-                        } catch (e) { if (retry === 2) logMsg(`  ${ep.name}: ${e.message}`) }
-                    }
+
+                // Primary: WBI-signed endpoint (what the player actually uses)
+                try {
+                    const sign = await wbiSign({ aid: String(v.aid), cid: String(v.cid) })
+                    const params = new URLSearchParams({
+                        aid: v.aid, cid: v.cid,
+                        isGaiaAvoided: 'false', web_location: '1315873',
+                        dm_img_list: '[]', dm_img_str: 'V2ViR0Y=',
+                        wts: sign.wts, w_rid: sign.w_rid,
+                    })
+                    const data = await fetchSub(`https://api.bilibili.com/x/player/wbi/v2?${params}`)
+                    const list = data?.data?.subtitle?.subtitles
+                    if (list?.length) subs = list
+                } catch (e) { logMsg(`  wbi/v2: ${e.message}`) }
+
+                // Fallback: v2 without WBI
+                if (!subs) {
+                    try {
+                        const data = await fetchSub(`https://api.bilibili.com/x/player/v2?aid=${v.aid}&cid=${v.cid}`)
+                        const list = data?.data?.subtitle?.subtitles
+                        if (list?.length) subs = list
+                    } catch (e) { logMsg(`  v2: ${e.message}`) }
                 }
 
                 if (subs?.length) {
