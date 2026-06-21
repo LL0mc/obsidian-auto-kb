@@ -274,6 +274,41 @@
                     }
                 }
             } catch (e) { logMsg(`字幕: ${e.message}`) }
+
+            // Fallback: load subtitle from existing file
+            if (!raw.subtitle) {
+                try {
+                    const fname = safeFilename(v.title, bvid)
+                    const existing = await fetch(`${OAPI}/vault/${KB_SUBDIR}/${fname}.md`, {
+                        headers: { Authorization: `Bearer ${OAPI_KEY}` }
+                    })
+                    if (existing.ok) {
+                        const text = await existing.text()
+                        const segCount = text.match(/subtitle_segments:\s*(\d+)/)?.[1]
+                        const lang = text.match(/subtitle_lang:\s*"([^"]+)"/)?.[1]
+                        if (segCount && parseInt(segCount) > 0) {
+                            // Extract subtitle lines
+                            const lines = text.split('\n')
+                            const subLines = []
+                            let inSub = false
+                            for (const line of lines) {
+                                if (line.match(/^## 字幕/)) { inSub = true; continue }
+                                if (inSub && line.match(/^\d+:\d{2} /)) {
+                                    const ts = line.split(' ')[0]
+                                    const parts = ts.split(':')
+                                    const from = parseInt(parts[0]) * 60 + parseInt(parts[1])
+                                    subLines.push({ from, to: from + 3, text: line.substring(ts.length + 1) })
+                                }
+                                if (inSub && line.match(/^## /)) break
+                            }
+                            if (subLines.length > 0) {
+                                raw.subtitle = { segments: subLines.length, lang: lang || 'zh', list: subLines }
+                                logMsg(`✓ ${subLines.length} 条 (从已有文件恢复)`, true)
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
             if (!raw.subtitle) logMsg('字幕: 无', false)
 
             // 3. Comments
