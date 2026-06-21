@@ -236,24 +236,45 @@
             }
             logMsg(`✓ ${v.title}`, true)
 
-            // 2. Subtitle
+            // 2. Subtitle (try v2 first, then wbi/v2 with retry)
             logMsg('[2/3] 字幕...')
+            const subEndpoints = [
+                { name: 'v2', url: `https://api.bilibili.com/x/player/v2?aid=${v.aid}&cid=${v.cid}` },
+            ]
+            // Add wbi endpoint
             try {
-                const sub = await biliFetch(`https://api.bilibili.com/x/player/v2?aid=${v.aid}&cid=${v.cid}`)
-                const list = sub?.data?.subtitle?.subtitles
-                const t = list?.find(x => x.lan === 'ai-zh') || list?.[0]
-                if (t) {
-                    const subUrl = t.subtitle_url?.startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
-                    if (subUrl) {
-                        const r = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } })
-                        const sj = await r.json()
-                        if (sj?.body?.length) {
-                            raw.subtitle = { segments: sj.body.length, lang: t.lan_doc, list: sj.body.map(x => ({ from: x.from, to: x.to, text: x.content })) }
-                            logMsg(`✓ ${sj.body.length} 条`, true)
+                const sign = await wbiSign({ aid: String(v.aid), cid: String(v.cid) })
+                subEndpoints.push({ name: 'wbi/v2', url: `https://api.bilibili.com/x/player/wbi/v2?aid=${v.aid}&cid=${v.cid}&wts=${sign.wts}&w_rid=${sign.w_rid}` })
+            } catch (e) { logMsg(`字幕 WBI: ${e.message}`) }
+
+            for (const ep of subEndpoints) {
+                if (raw.subtitle) break
+                for (let retry = 0; retry < 3; retry++) {
+                    try {
+                        const sub = await biliFetch(ep.url)
+                        const list = sub?.data?.subtitle?.subtitles
+                        if (!list || list.length === 0) {
+                            if (retry === 0) logMsg(`  ${ep.name}: 空 (重试...)`)
+                            await new Promise(r => setTimeout(r, 500))
+                            continue
                         }
-                    }
+                        const t = list.find(x => x.lan === 'ai-zh') || list.find(x => x.lan_doc?.includes('中文')) || list[0]
+                        if (t) {
+                            const subUrl = t.subtitle_url?.startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
+                            if (subUrl) {
+                                const r = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } })
+                                const sj = await r.json()
+                                if (sj?.body?.length) {
+                                    raw.subtitle = { segments: sj.body.length, lang: t.lan_doc, list: sj.body.map(x => ({ from: x.from, to: x.to, text: x.content })) }
+                                    logMsg(`✓ ${sj.body.length} 条 (${t.lan_doc}) via ${ep.name}`, true)
+                                    break
+                                }
+                            }
+                        }
+                    } catch (e) { if (retry === 2) logMsg(`  ${ep.name}: ${e.message}`) }
+                    await new Promise(r => setTimeout(r, 500))
                 }
-            } catch (e) { logMsg(`字幕: ${e.message}`) }
+            }
             if (!raw.subtitle) logMsg('字幕: 无', false)
 
             // 3. Comments
