@@ -71,7 +71,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ message_ids: msgIds })
+                body: JSON.stringify({ chat_session_id: sessionId, message_ids: msgIds })
             })
             const data = await r.json()
             log(`    Status: ${r.status}`)

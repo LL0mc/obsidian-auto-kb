@@ -264,7 +264,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ message_ids: msgIds })
+            body: JSON.stringify({ chat_session_id: sessionId, message_ids: msgIds })
       }).then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (!data || !data.data || !data.data.share_id) {
