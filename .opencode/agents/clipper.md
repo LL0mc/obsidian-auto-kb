@@ -103,24 +103,26 @@ git commit -m "ingest: {来源类型} {标题前30字}"
 
 ## Lint 流程（健康检查）
 
-当用户要求检查 wiki 健康度时，读取 `.opencode/skills/wiki-lint/SKILL.md` 并按以下步骤执行。SKILL.md 已适配 `kb/wiki/` 子目录路径。
+当用户要求检查 wiki 健康度时，读取 `.opencode/skills/wiki-lint/SKILL.md` 并按以下步骤执行。
 
-### 检查项
+### 两级检查
 
-1. **孤儿页** — 零入链的页面
-2. **断链** — `[[wikilinks]]` 指向不存在的页面
-3. **缺 Frontmatter** — 缺 title / tags / created / updated 等字段
-4. **过期内容** — source 修改时间晚于页面更新时间
-5. **矛盾** — 跨页面说法冲突
-6. **Index 一致性** — `index.md` 跟实际文件清单匹配
-7. **溯源漂移** — 标记为 inferred 的比例过高
+**确定性检查（自动修复）：**
+- Index 一致性：`index.md` 条目 vs 实际文件
+- 断链：`[[wikilink]]` 指向不存在的页面
+- Frontmatter 缺失：缺 title / tags / created / updated
+
+**启发式检查（仅报告，用户决定）：**
+- 孤儿页：零入链的页面
+- 矛盾：跨页面说法冲突
+- 过时内容：source 修改时间晚于页面更新时间
+- 缺失概念：raw 中反复出现但没有对应概念页的术语
 
 ### 输出
 
-结构化报告，每项列出具体页面和修复建议。追加到 `log.md`：
-
-```markdown
-- [TIMESTAMP] LINT issues_found=N orphans=X broken_links=Y stale=Z contradictions=W
+确定性问题自动修复并报告；启发式问题列出后等用户决策。追加到 `log.md`：
+```
+- [TIMESTAMP] LINT issues_found=N auto_fixed=M needs_decision=K
 ```
 
 ---
@@ -143,6 +145,94 @@ git commit -m "ingest: {来源类型} {标题前30字}"
 ## Query 流程（知识问答）
 
 当用户提问时，读取 `.opencode/skills/wiki-query/SKILL.md` 并按以下步骤执行。
+
+### Query 步骤
+
+1. 读 `kb/wiki/index.md` 定位相关页面
+2. 读相关页面综合回答
+3. 优先使用 wiki 内容而非自身训练知识，引用时用 `[[wikilink]]`
+
+### Query 归档（可选）
+
+当回答包含有价值的综合分析时，**建议用户归档**："这个分析值得保存到 wiki 吗？"
+
+用户同意后：
+1. 将回答写为新的 wiki 页面 → `kb/wiki/sources/archive-{slug}.md`
+2. Frontmatter：`type: source`, `source_type: archive`, `concepts: [...]`, `created: today`
+3. 正文：保留完整分析，引用的 wiki 页面用 `[[wikilink]]`
+4. 更新 `kb/wiki/index.md`
+5. 追加 `kb/wiki/log.md`：`- **Query 归档**: 《标题》 → archive-{slug}.md`
+6. Git commit
+
+归档页面是综合分析，不是原始材料——不与已有来源摘要合并，始终新建。
+
+---
+
+## Frontmatter 规范
+
+### 概念笔记 (`kb/wiki/concepts/{slug}.md`)
+
+```yaml
+---
+title: 概念名
+type: concept
+tags:
+  - 标签
+aliases:
+  - 别称（同义词，非相关词）
+related:
+  - "[[关联概念]]"
+sources:
+  - "[[summary-xxx]]"
+created: 2026-05-20
+updated: 2026-05-20
+---
+```
+
+### 来源摘要 (`kb/wiki/sources/summary-{slug}.md`)
+
+```yaml
+---
+title: 来源标题
+type: source
+source_type: bilibili | deepseek | web | pdf | archive
+url: 原始链接
+owner: 作者/UP主
+bvid: BVxxx（B站专用）
+tags:
+  - 标签
+concepts:
+  - 概念1
+  - 概念2
+created: 2026-05-20
+---
+```
+
+---
+
+## 目录结构
+
+```
+kb/
+├── raw/                      ← 原始材料，永不修改
+│   ├── bilibili/             ← B站剪藏
+│   ├── deepseek/             ← DeepSeek 对话导出
+│   └── web/                  ← 网页剪藏
+├── wiki/                     ← Agent 维护的知识库
+│   ├── index.md              ← 总目录（每次 ingest 后更新）
+│   ├── log.md                ← 操作日志（纯追加）
+│   ├── concepts/             ← 概念笔记
+│   └── sources/              ← 来源摘要 + 归档
+└── .gitignore                ← 排除 cookie/token
+```
+
+### 文件命名规范
+
+- 概念笔记：`wiki/concepts/{中文slug}.md`
+- 来源摘要：`wiki/sources/summary-{英文slug}.md`
+- 归档：`wiki/sources/archive-{英文slug}.md`
+- 索引：直接覆盖 `wiki/index.md`
+- 日志：追加到 `wiki/log.md`
 
 ---
 
