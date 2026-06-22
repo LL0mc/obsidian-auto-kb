@@ -5,7 +5,6 @@
 // @description  Export DeepSeek chat to structured Markdown for KB ingestion
 // @author       Adapted for Obsidian KB
 // @match        https://chat.deepseek.com/*
-// @grant        GM_notification
 // @run-at       document-start
 // @license      MIT
 // ==/UserScript==
@@ -193,8 +192,24 @@
       setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
     }
 
-    function notify(text) {
-      GM_notification({ text: text, title: 'DeepSeek Export', timeout: 3000 });
+    var statusEl = null;
+    function showStatus(text, color) {
+      if (!statusEl) {
+        statusEl = document.createElement('div');
+        Object.assign(statusEl.style, {
+          position: 'fixed', left: '16px', bottom: '72px', zIndex: 999999,
+          padding: '4px 10px', borderRadius: '6px', fontSize: '12px',
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          color: '#fff', background: color || '#333', userSelect: 'none', lineHeight: '1',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.2)', transition: 'opacity 0.3s',
+        });
+        document.body.appendChild(statusEl);
+      }
+      statusEl.textContent = text;
+      statusEl.style.background = color || '#333';
+      statusEl.style.opacity = '1';
+      clearTimeout(statusEl._timer);
+      statusEl._timer = setTimeout(function () { statusEl.style.opacity = '0'; }, 3000);
     }
 
     function saveMd(md, title) {
@@ -254,7 +269,7 @@
           // No IndexedDB data: just notify, no share fallback
           btn.textContent = 'Export';
           btn.style.background = '#3964fe';
-          notify('无数据，无法导出');
+          showStatus('无数据', '#666');
         });
         return;
       }
@@ -276,7 +291,7 @@
           .catch(function () {
             btn.textContent = 'Export';
             btn.style.background = '#3964fe';
-            notify('获取失败');
+            showStatus('获取失败', '#f44336');
           });
         return;
       }
@@ -289,18 +304,19 @@
       if (!msgs.length) {
         btn.textContent = 'Export';
         btn.style.background = '#3964fe';
-        notify('无消息');
+        showStatus('无消息', '#666');
         return;
       }
       var md = generateMd(msgs);
       saveMd(md, title).then(function (status) {
-        btn.textContent = status === 'saved' ? '✓' : '↓';
+        var label = status === 'saved' ? '推送' : '下载';
+        btn.textContent = msgs.length + ' msgs';
         btn.style.background = '#4caf50';
+        showStatus(label + ' ' + msgs.length + ' 条到 Obsidian', '#4caf50');
         setTimeout(function () {
           btn.textContent = 'Export';
           btn.style.background = '#3964fe';
         }, 2000);
-        notify(status === 'saved' ? '已保存到 Obsidian' : '已下载 ' + title + '.md');
       });
     }
 
