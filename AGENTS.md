@@ -45,14 +45,14 @@
 ## Bilibili Clipper
 
 ### 脚本文件
-- `scripts/bili-clipper.user.js` — 油猴脚本 (v1.4)
+- `scripts/bili-clipper.user.js` — 油猴脚本 (v1.4)，浏览器端直接使用
 
 ### 抓取流程 (onFetchClick)
 
 **Step 1/3 — 视频信息**:
 - `GET /x/web-interface/view?bvid={bvid}` → 获取 aid, cid, title, desc, owner, stat, duration 等
 
-**Step 2/3 — 字幕** (重点):
+**Step 2/3 — 字幕**:
 
 字幕 API 调用策略（模拟播放器行为）:
 1. **主路径**: `GET /x/player/wbi/v2` (WBI 签名 + 播放器同款参数)
@@ -80,6 +80,33 @@
 ### SPA 导航兼容
 - 拦截 `history.pushState` + `popstate` + 轮询检测 URL 变化
 - URL 变化时重新初始化 UI 按钮
+
+---
+
+## KB 知识库管理
+
+### Git 仓库
+- KB 目录 `D:\notebooks\Lmc\brew\kb` 是独立 git repo
+- 用 `git status raw/ --porcelain` 检测新 raw 文件（`??` = 新增，`M` = 修改）
+- Ingest 完成后 `git add wiki/ raw/{source_file}` + `git commit`
+- `.gitignore` 排除 cookie/token 文件
+
+### Ingest 流程
+详见 `.opencode/agents/clipper.md`，核心步骤：
+0. Delta 检测（git status）
+1. 写来源摘要 → `kb/wiki/sources/summary-{slug}.md`
+2. 写/更新概念笔记 → `kb/wiki/concepts/{概念}.md`
+3. 建立互链
+4. 更新索引 `kb/wiki/index.md`
+5. 追加日志 `kb/wiki/log.md`
+6. Git 提交
+
+### Query 归档
+好的分析可以写回 wiki 成为 `kb/wiki/sources/archive-{slug}.md`，query 本身也变成知识积累。
+
+### Lint 分级
+- 确定性检查（index 一致性/断链/frontmatter）→ 自动修复
+- 启发式检查（矛盾/孤儿/过时）→ 仅报告，用户决策
 
 ---
 

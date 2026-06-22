@@ -22,10 +22,11 @@ Vault 根目录：`D:\notebooks\Lmc\brew`，KB 目录：`D:\notebooks\Lmc\brew\k
 
 - KB 目录 (`D:\notebooks\Lmc\brew\kb`) 是 git repo，用 `git status` 检测 delta
 - 采集入口：
-  - **B站**: `bili-clipper.user.js`（油猴）→ `kb/raw/bilibili/`
-  - **DeepSeek**: `deepseek-export.user.js`（油猴）→ `kb/raw/deepseek/`
+  - **B站**: `bili-clipper.user.js`（油猴，输出 MD）→ `kb/raw/bilibili/`
+  - **DeepSeek**: `deepseek-export.user.js`（油猴，输出 MD）→ `kb/raw/deepseek/`
   - **网页**: Obsidian Web Clipper → `kb/raw/web/`
   - **PDF/其他**: 手动 → `kb/raw/`
+  - 注意：`bili-clipper.ps1`（旧版 PowerShell）输出 JSON 格式，已被 user.js 取代
 - Vault 结构：wiki 文件在 `kb/wiki/` 下，含 `sources/`、`concepts/`、`index.md`、`log.md`
 - Skill 参考文件在 `.opencode/skills/`（obsidian-wiki 社区技能）
 
@@ -42,7 +43,7 @@ git status raw/ --porcelain
 ```
 
 - `??` 开头的行 = 新 raw 文件，需要 ingest
-- `M` 开头的行 = 已修改的 raw 文件，需要 re-ingest
+- `M` 开头的行 = 已修改的 raw 文件，需要 re-ingest（重新执行 Step 1-5 覆盖旧内容）
 - 无输出 = 没有新数据，提示用户"没有待处理的 raw 文件"
 
 对每个待处理的 raw 文件，解析文件名获取类型：
@@ -92,12 +93,19 @@ git status raw/ --porcelain
 
 在 `D:\notebooks\Lmc\brew\kb` 下执行：
 
+**单文件 ingest**：处理完立即 commit
 ```powershell
 git add wiki/ raw/{source_file}
 git commit -m "ingest: {来源类型} {标题前30字}"
 ```
 
-将产出的 wiki 文件和对应的 raw 文件一起提交。一次 ingest 一个文件一个 commit。
+**批量 ingest**：全部处理完后统一 commit
+```powershell
+git add wiki/ raw/
+git commit -m "ingest: 批量处理 {N} 个文件"
+```
+
+将产出的 wiki 文件和对应的 raw 文件一起提交。
 
 ---
 
