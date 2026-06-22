@@ -242,14 +242,29 @@
 
     // Fallback: create share link, fetch messages, then delete share
     function tryShareFallback() {
-      // Step 1: Create share link
       var sessionMatch = window.location.href.match(/\/chat\/s\/([a-f0-9-]+)/);
       var sessionId = sessionMatch ? sessionMatch[1] : null;
-      origFetch('/api/v0/share/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(sessionId ? { chat_session_id: sessionId } : {})
+      if (!sessionId) { finish([], '', 'none'); return; }
+
+      // Get message IDs from IndexedDB
+      var idbReq = indexedDB.open('deepseek-chat', 1);
+      idbReq.onsuccess = function (e) {
+        var db = e.target.result;
+        var tx = db.transaction('history-message', 'readonly');
+        var store = tx.objectStore('history-message');
+        var getAll = store.getAll();
+        getAll.onsuccess = function () {
+          var target = getAll.result.find(function (d) { return d.data?.chat_session?.id === sessionId; });
+          db.close();
+          var msgIds = target?.data?.chat_messages?.map(function (m) { return m.message_id; }) || [];
+          if (msgIds.length === 0) { finish([], '', 'none'); return; }
+
+          // Create share link with message_ids
+          origFetch('/api/v0/share/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ message_ids: msgIds })
       }).then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (!data || !data.data || !data.data.share_id) {

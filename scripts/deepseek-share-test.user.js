@@ -41,6 +41,28 @@
         const sessionId = m[1]
         log(`Session: ${sessionId.substring(0, 8)}...`)
 
+        // Get message IDs from IndexedDB
+        log('    Reading IndexedDB...')
+        const msgIds = await new Promise((resolve) => {
+            const req = indexedDB.open('deepseek-chat', 1)
+            req.onsuccess = (e) => {
+                const db = e.target.result
+                const tx = db.transaction('history-message', 'readonly')
+                const store = tx.objectStore('history-message')
+                const getAll = store.getAll()
+                getAll.onsuccess = () => {
+                    const target = getAll.result.find(d => d.data?.chat_session?.id === sessionId)
+                    db.close()
+                    if (target?.data?.chat_messages) {
+                        resolve(target.data.chat_messages.map(m => m.message_id))
+                    } else { resolve([]) }
+                }
+                getAll.onerror = () => { db.close(); resolve([]) }
+            }
+            req.onerror = () => resolve([])
+        })
+        log(`    ${msgIds.length} messages: [${msgIds.slice(0, 5).join(',')}${msgIds.length > 5 ? '...' : ''}]`)
+
         // Step 1: Create share
         log('[1] 创建分享链接...')
         let shareId
@@ -49,7 +71,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ chat_session_id: sessionId })
+                body: JSON.stringify({ message_ids: msgIds })
             })
             const data = await r.json()
             log(`    Status: ${r.status}`)
