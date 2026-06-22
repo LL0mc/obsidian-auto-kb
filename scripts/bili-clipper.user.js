@@ -238,22 +238,97 @@
 
             // 2. Subtitle
             logMsg('[2/3] 字幕...')
+            const fetchSub = async (url) => {
+                const r = await fetch(url, { credentials: 'include', headers: { Referer: 'https://www.bilibili.com/' } })
+                if (!r.ok) throw new Error(`HTTP ${r.status}`)
+                return r.json()
+            }
+
             try {
-                const sub = await biliFetch(`https://api.bilibili.com/x/player/v2?aid=${v.aid}&cid=${v.cid}`)
-                const list = sub?.data?.subtitle?.subtitles
-                const t = list?.find(x => x.lan === 'ai-zh') || list?.[0]
-                if (t) {
-                    const subUrl = t.subtitle_url?.startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
-                    if (subUrl) {
-                        const r = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } })
-                        const sj = await r.json()
-                        if (sj?.body?.length) {
+                // Match bilibili player: use WBI-signed wbi/v2 with full params
+                let subs = null
+
+                // Primary: WBI-signed endpoint (what the player actually uses)
+                try {
+                    const sign = await wbiSign({ aid: String(v.aid), cid: String(v.cid) })
+                    const params = new URLSearchParams({
+                        aid: v.aid, cid: v.cid,
+                        isGaiaAvoided: 'false', web_location: '1315873',
+                        dm_img_list: '[]', dm_img_str: 'V2ViR0Y=',
+                        wts: sign.wts, w_rid: sign.w_rid,
+                    })
+                    const data = await fetchSub(`https://api.bilibili.com/x/player/wbi/v2?${params}`)
+                    const list = data?.data?.subtitle?.subtitles
+                    if (list?.length) subs = list
+                } catch (e) { logMsg(`  wbi/v2: ${e.message}`) }
+
+                // Fallback: v2 without WBI
+                if (!subs) {
+                    try {
+                        const data = await fetchSub(`https://api.bilibili.com/x/player/v2?aid=${v.aid}&cid=${v.cid}`)
+                        const list = data?.data?.subtitle?.subtitles
+                        if (list?.length) subs = list
+                    } catch (e) { logMsg(`  v2: ${e.message}`) }
+                }
+
+                if (subs?.length) {
+                    // bilibili CDN may return wrong subtitle from another video.
+                    // Validate: subtitle last timestamp should be near video duration.
+                    const duration = v.duration || 0
+                    for (const t of subs) {
+                        const subUrl = (t.subtitle_url || '').startsWith('//') ? 'https:' + t.subtitle_url : t.subtitle_url
+                        if (!subUrl) continue
+                        try {
+                            const sj = await fetch(subUrl, { headers: { Referer: 'https://www.bilibili.com/' } }).then(r => r.json())
+                            if (!sj?.body?.length) continue
+                            const lastFrom = sj.body[sj.body.length - 1]?.from || 0
+                            // If subtitle duration is far from video duration, likely wrong video
+                            if (duration > 0 && (lastFrom > duration * 1.5 || lastFrom < duration * 0.1)) {
+                                logMsg(`  跳过可疑字幕 (${sj.body.length} 条，时长 ${Math.round(lastFrom)}s vs 视频 ${duration}s)`)
+                                continue
+                            }
                             raw.subtitle = { segments: sj.body.length, lang: t.lan_doc, list: sj.body.map(x => ({ from: x.from, to: x.to, text: x.content })) }
-                            logMsg(`✓ ${sj.body.length} 条`, true)
-                        }
+                            logMsg(`✓ 字幕 ${sj.body.length} 条 (${t.lan_doc})`, true)
+                            break
+                        } catch (e) { continue }
                     }
                 }
             } catch (e) { logMsg(`字幕: ${e.message}`) }
+
+            // Fallback: load subtitle from existing file
+            if (!raw.subtitle) {
+                try {
+                    const fname = safeFilename(v.title, bvid)
+                    const existing = await fetch(`${OAPI}/vault/${KB_SUBDIR}/${fname}.md`, {
+                        headers: { Authorization: `Bearer ${OAPI_KEY}` }
+                    })
+                    if (existing.ok) {
+                        const text = await existing.text()
+                        const segCount = text.match(/subtitle_segments:\s*(\d+)/)?.[1]
+                        const lang = text.match(/subtitle_lang:\s*"([^"]+)"/)?.[1]
+                        if (segCount && parseInt(segCount) > 0) {
+                            // Extract subtitle lines
+                            const lines = text.split('\n')
+                            const subLines = []
+                            let inSub = false
+                            for (const line of lines) {
+                                if (line.match(/^## 字幕/)) { inSub = true; continue }
+                                if (inSub && line.match(/^\d+:\d{2} /)) {
+                                    const ts = line.split(' ')[0]
+                                    const parts = ts.split(':')
+                                    const from = parseInt(parts[0]) * 60 + parseInt(parts[1])
+                                    subLines.push({ from, to: from + 3, text: line.substring(ts.length + 1) })
+                                }
+                                if (inSub && line.match(/^## /)) break
+                            }
+                            if (subLines.length > 0) {
+                                raw.subtitle = { segments: subLines.length, lang: lang || 'zh', list: subLines }
+                                logMsg(`✓ ${subLines.length} 条 (从已有文件恢复)`, true)
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
             if (!raw.subtitle) logMsg('字幕: 无', false)
 
             // 3. Comments
