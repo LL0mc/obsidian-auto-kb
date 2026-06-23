@@ -8,7 +8,7 @@ import sys, re, time, os, json, argparse
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-OBSIDIAN_VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", r"D:\notebooks\Lmc\brew"))
+OBSIDIAN_VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", ""))
 OUTPUT_DIR = "kb/raw/deepseek"
 
 API_PATTERNS = [

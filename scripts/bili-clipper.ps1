@@ -1,7 +1,7 @@
-﻿param(
+param(
     [Parameter(Mandatory)] [string]$Url,
     [string]$Vault = "brew",
-    [string]$KbDir = ""  # e.g. D:\notebooks\Lmc\brew\kb
+    [string]$KbDir = ""  # from config.json or env: OBSIDIAN_VAULT_PATH/kb
 )
 
 . "$PSScriptRoot\bili-api.ps1"

@@ -1,7 +1,7 @@
-﻿# scripts/sync-token.ps1
+# scripts/sync-token.ps1
 # Syncs API token and B站 cookie from config to vault for Tampermonkey runtime
 param(
-    [string]$VaultPath = "D:\notebooks\Lmc\brew",
+    [string]$VaultPath = $env:OBSIDIAN_VAULT_PATH,
     [switch]$UpdateUserJs
 )
 

@@ -1,8 +1,8 @@
-﻿# scripts/bili-fetch.ps1
+# scripts/bili-fetch.ps1
 # OpenCode entry point: fetch B站 video data, save to vault, ready for @clipper
 param(
     [Parameter(Mandatory)] [string]$Url,
-    [string]$VaultPath = "D:\notebooks\Lmc\brew"
+    [string]$VaultPath = $env:OBSIDIAN_VAULT_PATH
 )
 
 $ErrorActionPreference = "Stop"
