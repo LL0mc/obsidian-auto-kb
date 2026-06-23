@@ -1,8 +1,10 @@
 # Obsidian Manager
 
-AI 驱动的个人知识库工作流。从 B站、DeepSeek、网页等多种来源采集内容，Agent 自动摘要、提取概念、构建可检索、可链接的知识图谱。
+AI 驱动的个人知识库工作流。从 B站、DeepSeek、网页、微信读书等多种来源采集内容，Agent 自动摘要、提取概念、构建可检索、可链接的知识图谱。
 
-基于 [Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 模式。
+![流程示意图](docs/流程示意图.png)
+
+> **关于本项目：** 脚本和工具链由 Coding Agent 协助搭建；LLM 管理知识库的整体思路借鉴了 [Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 模式，目前仍在与用户磨合中持续调整。
 
 ## 架构
 
