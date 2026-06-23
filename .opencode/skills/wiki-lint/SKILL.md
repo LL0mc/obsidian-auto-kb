@@ -13,7 +13,7 @@ You are performing a health check on an Obsidian wiki. Your goal is to find and 
 
 ## Before You Start
 
-1. KB 目录：`D:\notebooks\Lmc\brew\kb`
+1. KB 目录：`$OBSIDIAN_VAULT_PATH/kb`（通过 `.env` 配置）
 2. Read `kb/wiki/index.md` for the full page inventory
 3. Read `kb/wiki/log.md` for recent activity context
 

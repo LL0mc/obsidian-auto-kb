@@ -1,143 +1,161 @@
-# Obsidian Manager — Personal Knowledge Base Workflow
+# Obsidian Manager
 
-从多种外部来源采集内容 → Agent 自动摘要、提取概念、写入 Obsidian vault → 构建可检索、可链接的个人知识图谱。
+AI 驱动的个人知识库工作流。从 B站、DeepSeek、网页等多种来源采集内容，Agent 自动摘要、提取概念、构建可检索、可链接的知识图谱。
 
-## Agents
+基于 [Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 模式。
 
-位于 `.opencode/agents/`，在对话中用 `@agent_name` 触发：
-
-| Agent | 功能 |
-|-------|------|
-| **`@clipper`** | KB 知识库摄取 — 读取 `kb/raw/` 中的原始材料 → 校验字幕一致性 → 写来源摘要 → 创建/更新概念笔记 → 更新索引和日志 |
-| **`@reading`** | 哲学读书陪读 — 读 PDF/EPUB，三种模式（章节推进、段落讨论、全书回顾），整理笔记到 KB |
-
-## 项目文件结构
+## 架构
 
 ```
-obsidian_manager/
-├── opencode.jsonc                    # Opencode 配置
-├── config.json                       # Cookie & vault 路径 (gitignored)
-├── .opencode/agents/
-│   ├── clipper.md                    # KB 摄取工作流（含字幕校验 + 重试）
-│   └── reading.md                    # 读书陪读工作流
-├── scripts/
-│   ├── bili-api.ps1                  # B站 API 核心模块（WBI 签名 + 视频/字幕/评论 API）
-│   ├── bili-fetch.ps1                # PowerShell 入口：全量抓取（标题/字幕/AI摘要/评论）
-│   ├── bili-clipper.user.js          # Tampermonkey 脚本：B站页面一键抓取到 Obsidian
-│   ├── boss-jd-sync.user.js          # Tampermonkey 脚本：Boss直聘 JD → Obsidian targets/
-│   ├── wbi-sign.ps1                  # WBI 签名算法（mixin key + MD5）
-│   └── sync-token.ps1                # 自动同步 Obsidian API Token + B站 Cookie
-├── templates/
-│   └── bilibili-clip.md              # B站剪藏笔记模板参考
-├── archive/                          # 历史中间文件（不直接使用）
-└── output/                           # 查询/lint 报告 (Agent 写入)
+┌─────────────────────────────────────────────────────┐
+│                    采集层 (Tampermonkey)              │
+│  bili-clipper.user.js    deepseek-export.user.js    │
+│         ↓                        ↓                   │
+│    kb/raw/bilibili/        kb/raw/deepseek/          │
+└─────────────────────┬───────────────────────────────┘
+                      │ git status 检测 delta
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                  处理层 (@clipper agent)              │
+│  Step 1: 写来源摘要 → sources/summary-{slug}.md     │
+│  Step 2: 写/更新概念 → concepts/{概念}.md            │
+│  Step 3: 建立互链                                     │
+│  Step 4: 更新索引 → index.md                          │
+│  Step 5: 追加日志 → log.md                            │
+│  Step 6: git commit                                  │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                    知识库 (Obsidian vault)            │
+│  kb/wiki/concepts/    概念笔记（跨来源知识节点）      │
+│  kb/wiki/sources/     来源摘要 + 归档                 │
+│  kb/wiki/index.md     总目录                          │
+│  kb/wiki/log.md       操作日志                        │
+└─────────────────────────────────────────────────────┘
 ```
 
-## 知识库结构 (vault: `brew`)
+## 快速开始
 
-```
-brew/kb/
-├── raw/                              # 原始材料（永不修改）
-│   ├── bilibili/                     # B站剪藏 Markdown（{标题前50字}_{BVID}.md）
-│   ├── web/                          # 网页剪藏 (Obsidian Web Clipper)
-│   └── deepseek/                     # DeepSeek 对话导出
-├── wiki/                             # Agent 维护的知识库
-│   ├── index.md                      # 总目录（每次 ingest 后更新）
-│   ├── log.md                        # 操作日志（纯追加）
-│   ├── _schema.md                    # 目录结构 + frontmatter 规范
-│   ├── concepts/                     # 概念笔记（跨来源抽取的知识节点）
-│   └── sources/                      # 单篇来源摘要
-└── outputs/                          # 查询结果 / lint 报告
-```
-
-## 前置条件
+### 1. 安装依赖
 
 | 依赖 | 说明 |
 |------|------|
-| **Obsidian** | vault `brew` 已打开 |
-| **Opencode** | TUI 或 Obsidian 插件均可 |
-| **B站 Cookie (SESSDATA)** | 用于 Tampermonkey 脚本。打开 B站 → 点 Tampermonkey 图标 → "设置 B站 SESSDATA" → 粘贴 Cookie 值 |
-| **Obsidian Local REST API 插件** | Tampermonkey 脚本写入 vault（端口 27124，HTTPS） |
-| **Tampermonkey** | 浏览器扩展，运行 bili-clipper.user.js |
+| [Obsidian](https://obsidian.md) | 打开你的 vault |
+| [Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) | 端口 27124，HTTPS |
+| [Tampermonkey](https://www.tampermonkey.net) | 浏览器扩展 |
+| [Opencode](https://opencode.ai) | TUI 或 Obsidian 插件 |
+
+### 2. 配置
+
+```bash
+# 复制配置模板
+cp .env.example .env
+cp config.example.json config.json
+
+# 编辑 .env，填入你的 vault 路径
+# 编辑 config.json，填入你的 B站 Cookie 和 vault 路径
+```
+
+### 3. 安装油猴脚本
+
+在 Tampermonkey 中导入：
+- `scripts/bili-clipper.user.js` — B站剪藏
+- `scripts/deepseek-export.user.js` — DeepSeek 对话导出
+
+### 4. 初始化 KB
+
+```bash
+cd $OBSIDIAN_VAULT_PATH/kb
+git init
+git add .
+git commit -m "初始提交"
+```
 
 ## 使用
 
-### B站剪藏 — Tampermonkey（推荐）
+### B站剪藏
 
-1. 打开任意 B站视频页
-2. 页面右下角点击 **⬇ KB**
-3. 脚本自动抓取标题 → 字幕 → 评论
-4. 推送到 Obsidian `kb/raw/bilibili/{标题}_{BVID}.md`
-5. 通知 `@clipper` 进行 ingest
+1. 打开 B站视频页
+2. 点击页面右下角 **⬇ KB** 按钮
+3. 脚本自动抓取：视频信息 → 字幕 → 评论
+4. 文件保存到 `kb/raw/bilibili/{标题}_{BVID}.md`
+5. 对 AI 说 "ingest"，Agent 自动处理
 
-### B站剪藏 — PowerShell
+### DeepSeek 导出
 
-```powershell
-cd D:\Coding\Agentic\projects\obsidian_manager
-powershell -File scripts\bili-fetch.ps1 -Url "https://www.bilibili.com/video/BVxxx"
-# → kb/raw/bilibili/{标题前50}_{BVID}.md → 通知 @clipper ingest
-```
-
-### 网页剪藏
-
-安装 [Obsidian Web Clipper](https://obsidian.com/clipper) 浏览器插件 → 配置保存目录为 `kb/raw/web/` → 剪藏后通知 `@clipper` ingest。
-
-### Boss直聘 JD 同步 — Tampermonkey
-
-保存到 brew vault `w_求职AI助理/targets/Auto-{公司}-{职位}.md`：
-
-1. 打开 Boss直聘职位详情页（`https://www.zhipin.com/job_detail/*`）
-2. 页面右下角点击 **📋 → Obsidian**
-3. 脚本自动提取 JD 信息 → 推送到 vault `w_求职AI助理/targets/`
-4. API 不可用时回退到浏览器下载
+1. 打开 DeepSeek 对话页
+2. 点击页面右下角 **📥 导出** 按钮
+3. 文件保存到 `kb/raw/deepseek/{标题}.md`
+4. 对 AI 说 "ingest"
 
 ### 知识库查询
 
-直接对话提问即可，AI 会自动查询 `kb/wiki/` 综合回答。
+直接对话提问，AI 自动查询 `kb/wiki/` 综合回答。好的分析可以归档为 `archive-{slug}.md`。
+
+### 健康检查
+
+对 AI 说 "lint" 或 "检查 wiki"，自动扫描并修复问题。
+
+## 项目结构
+
+```
+obsidian_manager/
+├── .opencode/
+│   ├── agents/
+│   │   ├── clipper.md          # KB 摄取工作流
+│   │   └── reading.md          # 读书陪读工作流
+│   └── skills/
+│       ├── wiki-lint/          # Wiki 健康检查
+│       ├── wiki-query/         # Wiki 查询
+│       ├── cross-linker/       # 自动补链
+│       └── llm-wiki/           # LLM Wiki 模式说明
+├── scripts/
+│   ├── bili-clipper.user.js    # B站剪藏（油猴）
+│   ├── deepseek-export.user.js # DeepSeek 导出（油猴）
+│   ├── bili-api.ps1            # B站 API 模块（PowerShell）
+│   ├── bili-fetch.ps1          # B站全量抓取（PowerShell）
+│   └── deepseek-fetch.py       # DeepSeek 导出（Python/Playwright）
+├── templates/                  # 笔记模板
+├── docs/                       # 项目文档
+├── .env.example                # 环境变量模板
+├── config.example.json         # 配置模板
+├── AGENTS.md                   # Agent 技术细节
+└── README.md
+```
 
 ## 工作流
 
-| 操作 | 触发 | Agent | 动作 |
-|------|------|-------|------|
-| **Ingest** | `raw/` 有新文件 | `@clipper` | 校验字幕 → 写来源摘要 → 创建/更新概念页 → 互链 → 更新索引和日志 |
-| **Reading** | 开始读书会话 | `@reading` | 读 PDF/EPUB → 章节笔记 → 概念抽取 → 讨论 → 入库 |
-| **Query** | 用户提问 | — | 读索引定位相关页 → 综合回答 |
+| 操作 | 触发方式 | 说明 |
+|------|---------|------|
+| **Ingest** | `raw/` 有新文件 + 说 "ingest" | 读取 → 摘要 → 概念 → 互链 → 索引 → 日志 → commit |
+| **Query** | 提问 | 读索引定位 → 读相关页 → 综合回答 |
+| **Lint** | 说 "lint" | 确定性问题自动修，启发式问题报告 |
+| **Crosslink** | 说 "补链接" | 扫描未加链的概念名，自动插入 wikilink |
 
-## 技术细节
-
-### 采集架构
+## KB 目录结构
 
 ```
-Tampermonkey (浏览器端)                        PowerShell (命令行)
-  │                                              │
-  ├─ fetch + credentials:include                ├─ WebRequest + Cookie 头
-  ├─ x/player/v2 → 字幕                         ├─ x/player/v2 → 字幕
-  ├─ x/v2/reply/main → 评论                     ├─ conclusion/get (WBI) → AI摘要
-  └─ PUT Obsidian REST API → vault              └─ 直接写文件 → vault
+$OBSIDIAN_VAULT_PATH/kb/
+├── raw/                        # 原始材料（永不修改）
+│   ├── bilibili/               # B站剪藏
+│   ├── deepseek/               # DeepSeek 对话导出
+│   └── web/                    # 网页剪藏
+├── wiki/                       # Agent 维护的知识库
+│   ├── index.md                # 总目录
+│   ├── log.md                  # 操作日志
+│   ├── concepts/               # 概念笔记
+│   └── sources/                # 来源摘要 + 归档
+└── .gitignore
 ```
 
-### B站 API 说明
+## 概念命名规范
 
-| 接口 | 是否需要 | 是否需要 WBI 签名 |
-|------|----------|-------------------|
-| `x/web-interface/view` | 视频基本信息 | 否 |
-| `x/player/v2` | 字幕（推荐，免 WBI） | **否** |
-| `x/player/wbi/v2` | 字幕（备选） | 是 |
-| `x/web-interface/view/conclusion/get` | AI 摘要 | 是 |
-| `x/v2/reply/main` | 评论 | 否 |
+Agent 创建概念页时遵循：
+1. **精确匹配粒度** — 对话讨论"Agent 架构"→ 概念叫 `Agent 架构`，不叫 `AI Agent`
+2. **避免过度泛化** — 石棉管控法规 → `石棉职业健康`，不叫 `中国法规`
+3. **检查已有概念** — 新建前先检查是否可复用
+4. **断链检查** — wikilink 必须指向已存在的页面
 
-### 字幕校验机制（@clipper Ingest Step 0）
+## License
 
-标题中文字符与前 5 条字幕对比，交集 < 10% 则判定内容不匹配 → 询问用户是否重抓 → 最多重试 3 次（间隔 2 秒）。
-
-### 已知限制
-
-| 问题 | 原因 | 现状 |
-|------|------|------|
-| AI 摘要浏览器端 -403 | SESSDATA SameSite 属性限制跨子域 Cookie 发送 | PowerShell 端可用，浏览器端暂时跳过 |
-| 字幕 CDN 偶发内容错乱 | B站 CDN auth_key 时效/缓存问题 | 已加字符重叠校验 + 自动重试兜底 |
-| 字幕内容为空 | 视频可能无 AI 字幕 | 脚本静默跳过，`@clipper` 校验前检查 |
-
-## 设计反思 & 经验记录
-
-详见 `docs/lessons.md`。
+[MIT](LICENSE)

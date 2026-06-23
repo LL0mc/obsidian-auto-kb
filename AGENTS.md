@@ -37,7 +37,7 @@
 2. `page.on("response")` 拦截 API 响应，匹配 `/api/v0/share/content` 等端点
 3. `extract_messages_from_api()` 解析 `data.data.biz_data.messages`
 4. 去重（按 message_id）→ 排序 → 生成 Markdown
-5. 保存到 `D:\notebooks\Lmc\brew\kb\raw\deepseek\{title}.md`
+5. 保存到 `$OBSIDIAN_VAULT_PATH/kb/raw/deepseek/{title}.md`
 6. 同时尝试 Obsidian REST API (PUT)
 
 ---
@@ -86,7 +86,7 @@
 ## KB 知识库管理
 
 ### Git 仓库
-- KB 目录 `D:\notebooks\Lmc\brew\kb` 是独立 git repo
+- KB 目录 `$OBSIDIAN_VAULT_PATH/kb` 是独立 git repo
 - 用 `git status raw/ --porcelain` 检测新 raw 文件（`??` = 新增，`M` = 修改）
 - Ingest 完成后 `git add wiki/ raw/{source_file}` + `git commit`
 - `.gitignore` 排除 cookie/token 文件
@@ -117,8 +117,3 @@
 - DeepSeek share API (`/api/v0/share/create`) 参数结构未知，已放弃分享降级方案
 - Playwright 无法复用 Edge profile（运行时锁死），测试时需关闭 Edge
 - bilibili 字幕 API 需要登录态（SESSDATA cookie），无 cookie 一律返回空
-
-## User Preferences
-
-- 每次回复必须包含「我做了什么」+「需要用户做什么」
-- 不要弹窗通知，状态显示在按钮下方即可

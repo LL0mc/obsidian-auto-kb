@@ -5,7 +5,7 @@ mode: subagent
 
 # KB 知识库工作流
 
-Vault 根目录：`D:\notebooks\Lmc\brew`，KB 目录：`D:\notebooks\Lmc\brew\kb`（git repo）
+Vault 根目录：`$OBSIDIAN_VAULT_PATH`（通过 `.env` 配置），KB 目录：`$OBSIDIAN_VAULT_PATH/kb`（git repo）
 
 本 Agent 根据用户意图自动路由到不同子流程：
 
@@ -20,7 +20,7 @@ Vault 根目录：`D:\notebooks\Lmc\brew`，KB 目录：`D:\notebooks\Lmc\brew\k
 
 ## 基础信息
 
-- KB 目录 (`D:\notebooks\Lmc\brew\kb`) 是 git repo，用 `git status` 检测 delta
+- KB 目录 (`$OBSIDIAN_VAULT_PATH/kb`) 是 git repo，用 `git status` 检测 delta
 - 采集入口：
   - **B站**: `bili-clipper.user.js`（油猴，输出 MD）→ `kb/raw/bilibili/`
   - **DeepSeek**: `deepseek-export.user.js`（油猴，输出 MD）→ `kb/raw/deepseek/`
@@ -36,7 +36,7 @@ Vault 根目录：`D:\notebooks\Lmc\brew`，KB 目录：`D:\notebooks\Lmc\brew\k
 
 ### Step 0: Delta 检测
 
-在 `D:\notebooks\Lmc\brew\kb` 下执行：
+在 `$OBSIDIAN_VAULT_PATH/kb` 下执行：
 
 ```powershell
 git status raw/ --porcelain
@@ -91,7 +91,7 @@ git status raw/ --porcelain
 
 ### Step 6: Git 提交
 
-在 `D:\notebooks\Lmc\brew\kb` 下执行：
+在 `$OBSIDIAN_VAULT_PATH/kb` 下执行：
 
 **单文件 ingest**：处理完立即 commit
 ```powershell
@@ -248,14 +248,14 @@ kb/
 
 ```powershell
 # 检测新 raw 文件（delta）
-cd D:\notebooks\Lmc\brew\kb
+cd $OBSIDIAN_VAULT_PATH/kb
 git status raw/ --porcelain
 
 # B站剪藏（用户端：在浏览器中点击脚本按钮即可，自动保存到 kb/raw/bilibili/）
 # DeepSeek 导出（用户端：在浏览器中点击脚本按钮即可，自动保存到 kb/raw/deepseek/）
 
 # 查看 raw 文件
-Get-ChildItem D:\notebooks\Lmc\brew\kb\raw\bilibili\ -Filter "*{BVID}*"
+Get-ChildItem $OBSIDIAN_VAULT_PATH/kb/raw/bilibili/ -Filter "*{BVID}*"
 
 # Ingest 后提交
 git add wiki/ raw/{source_file}

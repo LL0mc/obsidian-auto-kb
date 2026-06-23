@@ -1,5 +1,6 @@
 # Sensitive config
 config.json
+.env
 
 # Output directory
 output/
@@ -13,3 +14,6 @@ Thumbs.db
 
 # Archive
 archive/
+
+# Playwright
+.playwright-cli/
